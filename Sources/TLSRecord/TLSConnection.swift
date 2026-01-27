@@ -196,6 +196,21 @@ public final class TLSConnection: Sendable {
         handler.negotiatedALPN
     }
 
+    /// Application-specific peer info returned by the certificate validator callback.
+    ///
+    /// For libp2p, this is typically the remote `PeerID` extracted from the
+    /// peer's certificate extension during the handshake.
+    public var validatedPeerInfo: (any Sendable)? {
+        handler.validatedPeerInfo
+    }
+
+    /// The peer's certificate chain (DER encoded), leaf first.
+    ///
+    /// Available after the handshake completes and the peer has sent certificates.
+    public var peerCertificates: [Data]? {
+        handler.peerCertificates
+    }
+
     // MARK: - Private State
 
     private struct ConnectionState: Sendable {
