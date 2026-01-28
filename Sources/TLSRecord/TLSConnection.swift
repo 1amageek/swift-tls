@@ -30,16 +30,21 @@ public struct TLSConnectionOutput: Sendable {
     /// Alert received from the peer (if any)
     public let alert: TLSAlert?
 
+    /// Session tickets received from the server (post-handshake)
+    public let sessionTickets: [NewSessionTicketInfo]
+
     public init(
         dataToSend: Data = Data(),
         applicationData: Data = Data(),
         handshakeComplete: Bool = false,
-        alert: TLSAlert? = nil
+        alert: TLSAlert? = nil,
+        sessionTickets: [NewSessionTicketInfo] = []
     ) {
         self.dataToSend = dataToSend
         self.applicationData = applicationData
         self.handshakeComplete = handshakeComplete
         self.alert = alert
+        self.sessionTickets = sessionTickets
     }
 }
 
@@ -96,22 +101,28 @@ public final class TLSConnection: Sendable {
     /// - Parameter data: Raw TCP data received
     /// - Returns: Output containing data to send, received application data, and status
     public func processReceivedData(_ data: Data) async throws -> TLSConnectionOutput {
-        // Append to receive buffer
-        connectionState.withLock { $0.receiveBuffer.append(data) }
+        // Append to receive buffer and check size limit
+        try connectionState.withLock { state in
+            state.receiveBuffer.append(data)
+            guard state.receiveBuffer.count <= ConnectionState.maxReceiveBufferSize else {
+                throw TLSConnectionError.bufferOverflow
+            }
+        }
 
         var dataToSend = Data()
         var applicationData = Data()
         var handshakeComplete = false
         var receivedAlert: TLSAlert?
+        var sessionTickets: [NewSessionTicketInfo] = []
 
         // Process records one at a time, interleaving with handler processing
         while true {
             // Extract one record atomically (decode + consume in single lock scope)
             let extracted = try connectionState.withLock { state -> TLSRecord? in
-                guard let (record, consumed) = try TLSRecordCodec.decode(from: state.receiveBuffer) else {
+                guard let (record, consumed) = try TLSRecordCodec.decode(from: state.receiveBuffer.unconsumed) else {
                     return nil
                 }
-                state.receiveBuffer.removeFirst(consumed)
+                state.receiveBuffer.consumeFirst(consumed)
                 return record
             }
 
@@ -124,7 +135,7 @@ public final class TLSConnection: Sendable {
             case .handshake:
                 let level = currentEncryptionLevel()
                 let outputs = try await handler.processHandshakeData(payload, at: level)
-                let encoded = try encodeOutputs(outputs, handshakeComplete: &handshakeComplete)
+                let encoded = try encodeOutputs(outputs, handshakeComplete: &handshakeComplete, sessionTickets: &sessionTickets)
                 dataToSend.append(encoded)
 
             case .applicationData:
@@ -143,7 +154,8 @@ public final class TLSConnection: Sendable {
             dataToSend: dataToSend,
             applicationData: applicationData,
             handshakeComplete: handshakeComplete,
-            alert: receivedAlert
+            alert: receivedAlert,
+            sessionTickets: sessionTickets
         )
     }
 
@@ -217,7 +229,7 @@ public final class TLSConnection: Sendable {
         var handshakeStarted: Bool = false
         var handshakeCompleted: Bool = false
         var closed: Bool = false
-        var receiveBuffer: Data = Data()
+        var receiveBuffer: OffsetBuffer = OffsetBuffer()
         var cryptor: TLSRecordCryptor?
         var cipherSuite: CipherSuite?
         /// Deferred application receive keys (server-side only).
@@ -225,6 +237,9 @@ public final class TLSConnection: Sendable {
         /// but still needs handshake receive keys to decrypt ClientFinished.
         /// These keys are applied when handshakeComplete fires.
         var pendingReceiveKeys: TrafficKeys?
+
+        /// Maximum receive buffer size (256KB) to prevent DoS via unbounded buffering
+        static let maxReceiveBufferSize = 256 * 1024
     }
 
     // MARK: - Record Resolution
@@ -239,18 +254,28 @@ public final class TLSConnection: Sendable {
     private func resolveRecord(_ record: TLSRecord) throws -> (TLSContentType, Data) {
         if record.contentType == .applicationData {
             let cryptor = connectionState.withLock { $0.cryptor }
-            if let cryptor {
-                let (content, innerType) = try cryptor.decrypt(ciphertext: record.fragment)
-                return (innerType, content)
+            guard let cryptor else {
+                // RFC 8446 Section 5: applicationData records before encryption
+                // is active are a protocol violation.
+                throw TLSRecordError.unexpectedPlaintextApplicationData
             }
+            let (content, innerType) = try cryptor.decrypt(ciphertext: record.fragment)
+            return (innerType, content)
         }
         return (record.contentType, record.fragment)
     }
 
-    /// Determine the current encryption level based on handshake state
+    /// Determine the current encryption level based on handshake state.
+    ///
+    /// After the handshake completes, post-handshake messages (KeyUpdate,
+    /// NewSessionTicket) are processed at `.application` level, not `.handshake`.
     private func currentEncryptionLevel() -> TLSEncryptionLevel {
-        let hasCryptor = connectionState.withLock { $0.cryptor != nil }
-        return hasCryptor ? .handshake : .initial
+        let (completed, hasCryptor) = connectionState.withLock {
+            ($0.handshakeCompleted, $0.cryptor != nil)
+        }
+        if completed { return .application }
+        if hasCryptor { return .handshake }
+        return .initial
     }
 
     // MARK: - Output Processing
@@ -262,7 +287,8 @@ public final class TLSConnection: Sendable {
     /// on the server side). Buffers such data and encrypts it when keys arrive.
     private func encodeOutputs(_ outputs: [TLSOutput]) throws -> Data {
         var dummy = false
-        return try encodeOutputs(outputs, handshakeComplete: &dummy)
+        var tickets: [NewSessionTicketInfo] = []
+        return try encodeOutputs(outputs, handshakeComplete: &dummy, sessionTickets: &tickets)
     }
 
     /// Encode TLS handler outputs into TCP-ready bytes.
@@ -276,7 +302,8 @@ public final class TLSConnection: Sendable {
     /// 4. `.handshakeComplete` → mark connection as established
     private func encodeOutputs(
         _ outputs: [TLSOutput],
-        handshakeComplete: inout Bool
+        handshakeComplete: inout Bool,
+        sessionTickets: inout [NewSessionTicketInfo]
     ) throws -> Data {
         var dataToSend = Data()
         var pendingEncryptedData: [Data] = []
@@ -340,7 +367,10 @@ public final class TLSConnection: Sendable {
                     dataToSend.append(TLSRecordCodec.encodePlaintext(type: .alert, data: alertData))
                 }
 
-            case .newSessionTicket, .needMoreData, .error:
+            case .newSessionTicket(let info):
+                sessionTickets.append(info)
+
+            case .needMoreData, .error:
                 break
             }
         }
@@ -366,16 +396,21 @@ public final class TLSConnection: Sendable {
         let receiveSecret = handler.isClient ? info.serverSecret : info.clientSecret
         let sendSecret = handler.isClient ? info.clientSecret : info.serverSecret
 
-        if let recvSecret = receiveSecret, let sndSecret = sendSecret {
-            let sendKeys = TrafficKeys(secret: sndSecret, cipherSuite: info.cipherSuite)
+        connectionState.withLock { state in
+            // Ensure cryptor exists
+            if state.cryptor == nil {
+                state.cryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
+                state.cipherSuite = info.cipherSuite
+            }
 
-            connectionState.withLock { state in
-                if state.cryptor == nil {
-                    state.cryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
-                    state.cipherSuite = info.cipherSuite
-                }
+            // Update send keys if available
+            if let sndSecret = sendSecret {
+                let sendKeys = TrafficKeys(secret: sndSecret, cipherSuite: info.cipherSuite)
                 state.cryptor?.updateSendKeys(sendKeys)
+            }
 
+            // Update receive keys if available
+            if let recvSecret = receiveSecret {
                 if info.level == .application && !handler.isClient && !state.handshakeCompleted {
                     // Server initial handshake: defer receive key update until
                     // handshakeComplete fires (need handshake receive keys for ClientFinished).
@@ -428,4 +463,6 @@ public enum TLSConnectionError: Error, Sendable {
     case connectionClosed
     /// Received fatal alert from peer
     case fatalAlert(TLSAlert)
+    /// Receive buffer exceeded maximum size
+    case bufferOverflow
 }

@@ -12,8 +12,10 @@ import Synchronization
 /// Pure Swift TLS 1.3 implementation
 public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
 
-    /// Maximum size for handshake message buffers (64KB per level)
-    private static let maxBufferSize = 65536
+    /// Maximum size for handshake message buffers per encryption level.
+    /// 256KB accommodates large certificate chains (cross-signed, 4096-bit RSA)
+    /// while still providing DoS protection against unbounded buffer growth.
+    private static let maxBufferSize = 262144
 
     private let state = Mutex<HandlerState>(HandlerState())
     private let configuration: TLSConfiguration
@@ -229,35 +231,58 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
                 throw TLSError.unexpectedMessage("Cannot request key update before handshake complete")
             }
 
-            guard let currentClientSecret = state.clientApplicationSecret,
-                  let currentServerSecret = state.serverApplicationSecret else {
+            let currentSendSecret: SymmetricKey?
+            if state.isClientMode {
+                currentSendSecret = state.clientApplicationSecret
+            } else {
+                currentSendSecret = state.serverApplicationSecret
+            }
+
+            guard let sendSecret = currentSendSecret else {
                 throw TLSError.internalError("Application secrets not available for key update")
             }
 
-            // Derive next application traffic secrets
-            let nextClientSecret = state.keySchedule.nextApplicationSecret(
-                from: currentClientSecret
-            )
-            let nextServerSecret = state.keySchedule.nextApplicationSecret(
-                from: currentServerSecret
-            )
+            // Build KeyUpdate message (request peer to update too)
+            let keyUpdate = KeyUpdate(requestUpdate: .updateRequested)
+            let encoded = keyUpdate.encodeAsHandshake()
 
-            // Update stored secrets
-            state.clientApplicationSecret = nextClientSecret
-            state.serverApplicationSecret = nextServerSecret
-            state.keyPhase = (state.keyPhase + 1) % 2  // Toggle key phase bit
+            // Emit the KeyUpdate message first (encrypted with current keys)
+            var outputs: [TLSOutput] = [
+                .handshakeData(encoded, level: .application)
+            ]
 
-            // Get cipher suite from key schedule
+            // Derive next send secret
+            let nextSendSecret = state.keySchedule.nextApplicationSecret(from: sendSecret)
+
+            // Update stored send secret only
+            if state.isClientMode {
+                state.clientApplicationSecret = nextSendSecret
+            } else {
+                state.serverApplicationSecret = nextSendSecret
+            }
+            state.keyPhase = (state.keyPhase + 1) % 2
+
             let cipherSuite = state.keySchedule.cipherSuite
 
-            return [
-                .keysAvailable(KeysAvailableInfo(
+            // Emit keysAvailable with only the send secret updated
+            // Receive keys remain unchanged until peer's KeyUpdate arrives
+            if state.isClientMode {
+                outputs.append(.keysAvailable(KeysAvailableInfo(
                     level: .application,
-                    clientSecret: nextClientSecret,
-                    serverSecret: nextServerSecret,
+                    clientSecret: nextSendSecret,
+                    serverSecret: nil,
                     cipherSuite: cipherSuite
-                ))
-            ]
+                )))
+            } else {
+                outputs.append(.keysAvailable(KeysAvailableInfo(
+                    level: .application,
+                    clientSecret: nil,
+                    serverSecret: nextSendSecret,
+                    cipherSuite: cipherSuite
+                )))
+            }
+
+            return outputs
         }
     }
 
@@ -395,6 +420,12 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
             state.negotiatedALPN = clientMachine.negotiatedALPN
             state.handshakeComplete = true
 
+        case .keyUpdate:
+            outputs = try processKeyUpdate(content: content, state: &state)
+
+        case .newSessionTicket:
+            outputs = try processNewSessionTicket(content: content, state: &state)
+
         default:
             throw TLSError.unexpectedMessage("Unexpected message type \(type) for client")
         }
@@ -459,11 +490,154 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
             state.negotiatedALPN = serverMachine.negotiatedALPN
             state.handshakeComplete = true
 
+        case .keyUpdate:
+            outputs = try processKeyUpdate(content: content, state: &state)
+
         default:
             throw TLSError.unexpectedMessage("Unexpected message type \(type) for server")
         }
 
         return outputs
+    }
+
+    // MARK: - Post-Handshake Messages
+
+    /// Process a received KeyUpdate message (RFC 8446 Section 4.6.3)
+    ///
+    /// When we receive KeyUpdate from the peer:
+    /// 1. Update our receive keys (peer's send direction = our receive direction)
+    /// 2. If peer requested an update, respond with our own KeyUpdate and update our send keys
+    private func processKeyUpdate(
+        content: Data,
+        state: inout HandlerState
+    ) throws -> [TLSOutput] {
+        guard state.handshakeComplete else {
+            throw TLSError.unexpectedMessage("KeyUpdate before handshake complete")
+        }
+
+        let keyUpdate = try KeyUpdate.decode(from: content)
+
+        // Derive next receive secret (peer updated their send keys)
+        let currentReceiveSecret: SymmetricKey?
+        if state.isClientMode {
+            currentReceiveSecret = state.serverApplicationSecret
+        } else {
+            currentReceiveSecret = state.clientApplicationSecret
+        }
+
+        guard let recvSecret = currentReceiveSecret else {
+            throw TLSError.internalError("Application secrets not available for key update")
+        }
+
+        let nextReceiveSecret = state.keySchedule.nextApplicationSecret(from: recvSecret)
+        let cipherSuite = state.keySchedule.cipherSuite
+
+        // Update stored receive secret
+        if state.isClientMode {
+            state.serverApplicationSecret = nextReceiveSecret
+        } else {
+            state.clientApplicationSecret = nextReceiveSecret
+        }
+
+        var outputs: [TLSOutput] = []
+
+        // Emit keysAvailable with only receive secret updated
+        if state.isClientMode {
+            outputs.append(.keysAvailable(KeysAvailableInfo(
+                level: .application,
+                clientSecret: nil,
+                serverSecret: nextReceiveSecret,
+                cipherSuite: cipherSuite
+            )))
+        } else {
+            outputs.append(.keysAvailable(KeysAvailableInfo(
+                level: .application,
+                clientSecret: nextReceiveSecret,
+                serverSecret: nil,
+                cipherSuite: cipherSuite
+            )))
+        }
+
+        // If peer requested an update, respond with our own KeyUpdate
+        if keyUpdate.requestUpdate == .updateRequested {
+            let response = KeyUpdate(requestUpdate: .updateNotRequested)
+            let encoded = response.encodeAsHandshake()
+
+            // Send response (encrypted with current send keys)
+            outputs.append(.handshakeData(encoded, level: .application))
+
+            // Update our send keys
+            let currentSendSecret: SymmetricKey?
+            if state.isClientMode {
+                currentSendSecret = state.clientApplicationSecret
+            } else {
+                currentSendSecret = state.serverApplicationSecret
+            }
+
+            guard let sendSecret = currentSendSecret else {
+                throw TLSError.internalError("Application secrets not available for key update")
+            }
+
+            let nextSendSecret = state.keySchedule.nextApplicationSecret(from: sendSecret)
+
+            if state.isClientMode {
+                state.clientApplicationSecret = nextSendSecret
+            } else {
+                state.serverApplicationSecret = nextSendSecret
+            }
+
+            // Emit keysAvailable for send direction
+            if state.isClientMode {
+                outputs.append(.keysAvailable(KeysAvailableInfo(
+                    level: .application,
+                    clientSecret: nextSendSecret,
+                    serverSecret: nil,
+                    cipherSuite: cipherSuite
+                )))
+            } else {
+                outputs.append(.keysAvailable(KeysAvailableInfo(
+                    level: .application,
+                    clientSecret: nil,
+                    serverSecret: nextSendSecret,
+                    cipherSuite: cipherSuite
+                )))
+            }
+        }
+
+        return outputs
+    }
+
+    /// Process a received NewSessionTicket message (RFC 8446 Section 4.6.1)
+    ///
+    /// Only valid for clients receiving post-handshake tickets from the server.
+    private func processNewSessionTicket(
+        content: Data,
+        state: inout HandlerState
+    ) throws -> [TLSOutput] {
+        guard state.handshakeComplete else {
+            throw TLSError.unexpectedMessage("NewSessionTicket before handshake complete")
+        }
+        guard state.isClientMode else {
+            throw TLSError.unexpectedMessage("Server received NewSessionTicket")
+        }
+
+        let ticket = try NewSessionTicket.decode(from: content)
+        let cipherSuite = state.keySchedule.cipherSuite
+
+        // The resumption master secret is needed to derive the PSK
+        guard let clientMachine = state.clientStateMachine,
+              let resumptionMasterSecret = clientMachine.resumptionMasterSecret else {
+            throw TLSError.internalError("Resumption master secret not available")
+        }
+
+        return [
+            .newSessionTicket(NewSessionTicketInfo(
+                ticket: ticket,
+                resumptionMasterSecret: resumptionMasterSecret,
+                cipherSuite: cipherSuite,
+                alpn: state.negotiatedALPN
+            ))
+        ]
     }
 }
 
@@ -518,6 +692,16 @@ public final class ServerStateMachine: Sendable {
                 clientHello.cipherSuites.contains($0)
             }) else {
                 throw TLSHandshakeError.noCipherSuiteMatch
+            }
+
+            // RFC 8446 Section 4.1.4: ClientHello2 cipher suite must be
+            // consistent with the cipher suite selected in HelloRetryRequest
+            if isClientHello2 {
+                guard selectedCipherSuite == state.context.cipherSuite else {
+                    throw TLSHandshakeError.unexpectedMessage(
+                        "ClientHello2 cipher suite inconsistent with HelloRetryRequest"
+                    )
+                }
             }
             state.context.cipherSuite = selectedCipherSuite
 
@@ -692,7 +876,7 @@ public final class ServerStateMachine: Sendable {
             let sharedSecret = try serverKeyExchange.sharedSecret(with: peerKeyShareEntry.keyExchange)
             state.context.sharedSecret = sharedSecret
 
-            // Negotiate ALPN (RFC 8446 Section 4.2.7) - optional
+            // Negotiate ALPN (RFC 7301 Section 3.2, RFC 8446 Section 4.2.7)
             if let clientALPN = clientHello.alpn {
                 if !configuration.alpnProtocols.isEmpty {
                     guard let common = ALPNExtension(protocols: configuration.alpnProtocols)
@@ -700,9 +884,9 @@ public final class ServerStateMachine: Sendable {
                         throw TLSHandshakeError.noALPNMatch
                     }
                     state.context.negotiatedALPN = common
-                } else {
-                    state.context.negotiatedALPN = clientALPN.protocols.first
                 }
+                // RFC 7301: Server SHOULD NOT respond with ALPN if it has no configured list.
+                // negotiatedALPN stays nil, so EncryptedExtensions won't include ALPN.
             } else if !configuration.alpnProtocols.isEmpty {
                 throw TLSHandshakeError.noALPNMatch
             }
@@ -1028,6 +1212,37 @@ public final class ServerStateMachine: Sendable {
             // Update transcript AFTER using it for signature verification
             let message = HandshakeCodec.encode(type: .certificateVerify, content: data)
             state.context.transcriptHash.update(with: message)
+
+            // Perform X.509 chain validation for client certificate (mTLS)
+            // Skip if expectedPeerPublicKey is set (raw public key verification mode)
+            if configuration.verifyPeer && configuration.expectedPeerPublicKey == nil {
+                guard let leafCert = state.context.clientCertificate else {
+                    throw TLSHandshakeError.certificateVerificationFailed("Missing client certificate")
+                }
+
+                // Parse intermediate certificates
+                let intermediateCerts = try (state.context.clientCertificates ?? []).dropFirst().compactMap { certData -> X509Certificate? in
+                    try X509Certificate.parse(from: certData)
+                }
+
+                // Set up validation options for client certificates
+                var validationOptions = X509ValidationOptions()
+                validationOptions.allowSelfSigned = configuration.allowSelfSigned
+                // RFC 5280 Section 4.2.1.12: Client certificates MUST have clientAuth EKU
+                validationOptions.requiredEKU = .clientAuth
+                // No hostname validation for client certificates
+
+                let x509Validator = X509Validator(
+                    trustedRoots: configuration.trustedRootCertificates ?? [],
+                    options: validationOptions
+                )
+
+                do {
+                    try x509Validator.validate(certificate: leafCert, intermediates: Array(intermediateCerts))
+                } catch let error as X509Error {
+                    throw TLSHandshakeError.certificateVerificationFailed(error.description)
+                }
+            }
 
             // Call custom certificate validator if configured
             if let validator = configuration.certificateValidator,

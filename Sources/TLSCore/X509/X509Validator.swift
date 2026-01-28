@@ -190,19 +190,25 @@ public struct X509Validator: Sendable {
 
     // MARK: - Chain Building
 
-    /// Builds a certificate chain from leaf to root
+    /// Builds a certificate chain from leaf to root.
+    ///
+    /// When multiple issuer candidates share the same Subject (e.g. cross-signed CAs),
+    /// this method verifies each candidate's signature before selecting one, ensuring
+    /// the chain is cryptographically valid.
     private func buildChain(
         leaf: X509Certificate,
         intermediates: [X509Certificate]
     ) throws -> [X509Certificate] {
         var chain: [X509Certificate] = [leaf]
         var current = leaf
+        let pool = intermediates + trustedRoots
 
         // Build chain by finding issuers
         while !current.isSelfSigned {
-            // Look for issuer in intermediates
-            guard let issuer = findIssuer(for: current, in: intermediates + trustedRoots) else {
-                // If we can't find the issuer but have trusted roots, check if current is trusted
+            let candidates = findIssuers(for: current, in: pool)
+
+            guard !candidates.isEmpty else {
+                // If we can't find the issuer but current itself is a trusted root, stop
                 if trustedRoots.contains(where: {
                     $0.subject == current.subject
                         && $0.subjectPublicKeyInfoDER == current.subjectPublicKeyInfoDER
@@ -212,9 +218,21 @@ public struct X509Validator: Sendable {
                 throw X509Error.issuerNotFound(issuer: current.issuer.string)
             }
 
-            // Prevent cycles
-            if chain.contains(where: { $0.subject == issuer.subject && $0.serialNumber == issuer.serialNumber }) {
-                break
+            // Try each candidate's signature; pick the first that verifies
+            var selectedIssuer: X509Certificate?
+            for candidate in candidates {
+                // Prevent cycles
+                if chain.contains(where: { $0.subject == candidate.subject && $0.serialNumber == candidate.serialNumber }) {
+                    continue
+                }
+                if (try? verifySignature(of: current, signedBy: candidate)) != nil {
+                    selectedIssuer = candidate
+                    break
+                }
+            }
+
+            guard let issuer = selectedIssuer else {
+                throw X509Error.issuerNotFound(issuer: current.issuer.string)
             }
 
             chain.append(issuer)
@@ -229,18 +247,12 @@ public struct X509Validator: Sendable {
         return chain
     }
 
-    /// Finds the issuer certificate for a given certificate
-    private func findIssuer(
+    /// Finds all issuer candidates for a given certificate (by Subject match).
+    private func findIssuers(
         for certificate: X509Certificate,
         in candidates: [X509Certificate]
-    ) -> X509Certificate? {
-        for candidate in candidates {
-            // Issuer's subject must match certificate's issuer
-            if candidate.subject == certificate.issuer {
-                return candidate
-            }
-        }
-        return nil
+    ) -> [X509Certificate] {
+        candidates.filter { $0.subject == certificate.issuer }
     }
 
     // MARK: - Individual Certificate Validation
@@ -558,17 +570,26 @@ public struct X509Validator: Sendable {
             return
         }
 
-        // Check if the required EKU is present
-        let hasRequiredUsage: Bool
+        // Map RequiredEKU to the corresponding ExtendedKeyUsage.Usage
+        let requiredUsage: ExtendedKeyUsage.Usage
         switch requiredEKU {
         case .serverAuth:
-            hasRequiredUsage = eku.isServerAuth
+            requiredUsage = .serverAuth
         case .clientAuth:
-            hasRequiredUsage = eku.isClientAuth
-        default:
-            // For other EKUs, check by OID
-            hasRequiredUsage = eku.contains { $0 == ExtendedKeyUsage.Usage.serverAuth }
+            requiredUsage = .clientAuth
+        case .codeSigning:
+            requiredUsage = .codeSigning
+        case .emailProtection:
+            requiredUsage = .emailProtection
+        case .timeStamping:
+            requiredUsage = .timeStamping
+        case .ocspSigning:
+            requiredUsage = .ocspSigning
         }
+
+        // Check if the certificate contains the required EKU or anyExtendedKeyUsage
+        let hasRequiredUsage = eku.contains { $0 == requiredUsage } ||
+                               eku.contains { $0 == .any }
 
         if hasRequiredUsage {
             return

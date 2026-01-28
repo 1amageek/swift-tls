@@ -143,26 +143,33 @@ struct RecordSecurityEdgeCaseTests {
 
         let clientAK = try #require(result.clientAppKeys)
         let originalClientSecret = try #require(clientAK.clientSecret)
-        let originalServerSecret = try #require(clientAK.serverSecret)
 
         // Request key update on client
         let updateOutputs = try await result.clientHandler.requestKeyUpdate()
 
-        // Should produce new keysAvailable
+        // RFC 8446 Section 4.6.3: requestKeyUpdate should:
+        // 1. Emit a handshakeData with the KeyUpdate message
+        // 2. Emit keysAvailable with only the send (client) secret updated
+        //    (receive keys update when peer's KeyUpdate arrives)
+        var handshakeDataFound = false
         var newKeys: KeysAvailableInfo?
         for output in updateOutputs {
+            if case .handshakeData = output {
+                handshakeDataFound = true
+            }
             if case .keysAvailable(let info) = output {
                 newKeys = info
             }
         }
 
+        #expect(handshakeDataFound, "KeyUpdate message should be emitted")
+
         let updatedKeys = try #require(newKeys)
         let newClientSecret = try #require(updatedKeys.clientSecret)
-        let newServerSecret = try #require(updatedKeys.serverSecret)
 
-        // New secrets must differ from original
+        // Only send (client) secret is updated; receive (server) secret is nil
+        #expect(updatedKeys.serverSecret == nil, "Receive secret should not be updated until peer's KeyUpdate arrives")
         #expect(newClientSecret != originalClientSecret)
-        #expect(newServerSecret != originalServerSecret)
         #expect(updatedKeys.level == .application)
     }
 }

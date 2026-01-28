@@ -143,4 +143,10 @@ public enum TLSRecordError: Error, Sendable {
     case noKeysAvailable
     /// Invalid inner plaintext (missing content type after decryption)
     case invalidInnerPlaintext
+    /// Sequence number would overflow; key update required (RFC 8446 Section 5.3)
+    case sequenceNumberOverflow
+    /// Application data received before encryption is active
+    case unexpectedPlaintextApplicationData
+    /// Receive buffer exceeded maximum size
+    case bufferOverflow
 }

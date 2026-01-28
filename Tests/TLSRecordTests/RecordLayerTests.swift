@@ -411,15 +411,11 @@ struct TLSRecordLayerIndependentKeyTests {
         let encrypted = try layer.writeApplicationData(plaintext)
         #expect(encrypted[0] == TLSContentType.applicationData.rawValue)
 
-        // Reading encrypted data should fail because receive keys are not set
-        // The record will be treated as unencrypted (receiveEncryptionActive is false)
-        let outputs = try layer.processReceivedData(encrypted)
-        #expect(outputs.count == 1)
-        // Without receive keys, the applicationData record is passed through raw
-        if case .applicationData(let data) = outputs[0] {
-            #expect(data != plaintext) // Raw ciphertext, not decrypted
-        } else {
-            Issue.record("Expected applicationData output")
+        // Reading encrypted data should fail because receive keys are not set.
+        // RFC 8446 Section 5: applicationData records before encryption is active
+        // on the receive side is a protocol violation.
+        #expect(throws: TLSRecordError.self) {
+            _ = try layer.processReceivedData(encrypted)
         }
     }
 

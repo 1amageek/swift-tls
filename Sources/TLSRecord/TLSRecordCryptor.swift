@@ -94,6 +94,9 @@ public final class TLSRecordCryptor: Sendable {
                 cipherSuite: cipherSuite
             )
 
+            guard state.sendSequenceNumber < UInt64.max else {
+                throw TLSRecordError.sequenceNumberOverflow
+            }
             state.sendSequenceNumber += 1
             return ciphertext
         }
@@ -126,6 +129,9 @@ public final class TLSRecordCryptor: Sendable {
                 cipherSuite: cipherSuite
             )
 
+            guard state.receiveSequenceNumber < UInt64.max else {
+                throw TLSRecordError.sequenceNumberOverflow
+            }
             state.receiveSequenceNumber += 1
 
             // Parse inner plaintext: find the real content type

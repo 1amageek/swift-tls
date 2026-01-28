@@ -569,12 +569,15 @@ public final class ClientStateMachine: Sendable {
 
             let encryptedExtensions = try EncryptedExtensions.decode(from: data)
 
-            // Extract ALPN (optional: only validate if we offered ALPN)
+            // Validate ALPN (RFC 7301 Section 3.2)
             if let alpn = encryptedExtensions.selectedALPN {
-                if !state.configuration.alpnProtocols.isEmpty {
-                    guard state.configuration.alpnProtocols.contains(alpn) else {
-                        throw TLSHandshakeError.noALPNMatch
-                    }
+                // Server MUST NOT send ALPN if client didn't offer any
+                guard !state.configuration.alpnProtocols.isEmpty else {
+                    throw TLSHandshakeError.invalidExtension("Server sent ALPN but client did not offer any")
+                }
+                // Server's selection must be one we offered
+                guard state.configuration.alpnProtocols.contains(alpn) else {
+                    throw TLSHandshakeError.noALPNMatch
                 }
                 state.context.negotiatedALPN = alpn
             }

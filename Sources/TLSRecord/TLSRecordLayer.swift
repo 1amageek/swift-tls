@@ -146,13 +146,16 @@ public final class TLSRecordLayer: Sendable {
         // Extract all complete records atomically in a single lock
         let records = try state.withLock { state -> [TLSRecord] in
             state.readBuffer.append(data)
+            guard state.readBuffer.count <= RecordLayerState.maxBufferSize else {
+                throw TLSRecordError.bufferOverflow
+            }
 
             var extracted: [TLSRecord] = []
             while true {
-                guard let (record, consumed) = try TLSRecordCodec.decode(from: state.readBuffer) else {
+                guard let (record, consumed) = try TLSRecordCodec.decode(from: state.readBuffer.unconsumed) else {
                     break
                 }
-                state.readBuffer.removeFirst(consumed)
+                state.readBuffer.consumeFirst(consumed)
                 extracted.append(record)
             }
             return extracted
@@ -170,9 +173,12 @@ public final class TLSRecordLayer: Sendable {
     // MARK: - Private
 
     private struct RecordLayerState: Sendable {
-        var readBuffer: Data = Data()
+        var readBuffer: OffsetBuffer = OffsetBuffer()
         var sendEncryptionActive: Bool = false
         var receiveEncryptionActive: Bool = false
+
+        /// Maximum read buffer size (256KB) to prevent DoS via unbounded buffering
+        static let maxBufferSize = 256 * 1024
     }
 
     /// Write encrypted record(s), fragmenting if necessary
@@ -235,8 +241,9 @@ public final class TLSRecordLayer: Sendable {
                     return [.changeCipherSpec]
                 }
             } else {
-                // Before encryption, application data records are unexpected
-                return [.applicationData(record.fragment)]
+                // TLS 1.3: application data records before encryption is active
+                // are a protocol violation (RFC 8446 Section 5)
+                throw TLSRecordError.unexpectedPlaintextApplicationData
             }
         }
     }
