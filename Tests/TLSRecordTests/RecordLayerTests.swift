@@ -540,3 +540,92 @@ struct TLSContentTypeTests {
         #expect(TLSContentType.applicationData.rawValue == 23)
     }
 }
+
+// MARK: - Additional Cipher Suite Tests
+
+@Suite("Additional Cipher Suite Tests")
+struct AdditionalCipherSuiteTests {
+
+    @Test("ChaCha20-Poly1305 record layer roundtrip")
+    func testChaCha20RecordLayerRoundtrip() throws {
+        let layer = TLSRecordLayer(cipherSuite: .tls_chacha20_poly1305_sha256)
+
+        let secret = SymmetricKey(size: .bits256)
+        let keys = TrafficKeys(
+            secret: secret,
+            cipherSuite: .tls_chacha20_poly1305_sha256
+        )
+
+        layer.updateKeys(send: keys, receive: keys)
+
+        let plaintext = Data("ChaCha20 record layer test".utf8)
+        let encrypted = try layer.writeApplicationData(plaintext)
+
+        #expect(encrypted[0] == TLSContentType.applicationData.rawValue)
+
+        let outputs = try layer.processReceivedData(encrypted)
+        #expect(outputs.count == 1)
+
+        if case .applicationData(let data) = outputs[0] {
+            #expect(data == plaintext)
+        } else {
+            Issue.record("Expected applicationData output")
+        }
+    }
+
+    @Test("AES-256-GCM record layer roundtrip")
+    func testAES256RecordLayerRoundtrip() throws {
+        let layer = TLSRecordLayer(cipherSuite: .tls_aes_256_gcm_sha384)
+
+        let secret = SymmetricKey(data: Data(repeating: 0xAB, count: 48))
+        let keys = TrafficKeys(
+            secret: secret,
+            cipherSuite: .tls_aes_256_gcm_sha384
+        )
+
+        layer.updateKeys(send: keys, receive: keys)
+
+        let plaintext = Data("AES-256 record layer test".utf8)
+        let encrypted = try layer.writeApplicationData(plaintext)
+
+        #expect(encrypted[0] == TLSContentType.applicationData.rawValue)
+
+        let outputs = try layer.processReceivedData(encrypted)
+        #expect(outputs.count == 1)
+
+        if case .applicationData(let data) = outputs[0] {
+            #expect(data == plaintext)
+        } else {
+            Issue.record("Expected applicationData output")
+        }
+    }
+
+    @Test("Mixed cipher suite keys cannot cross-decrypt")
+    func testMixedCipherSuiteEncryptDecrypt() throws {
+        // Encrypt with AES-128
+        let aes128Layer = TLSRecordLayer(cipherSuite: .tls_aes_128_gcm_sha256)
+        let aes128Secret = SymmetricKey(size: .bits256)
+        let aes128Keys = TrafficKeys(
+            secret: aes128Secret,
+            cipherSuite: .tls_aes_128_gcm_sha256
+        )
+        aes128Layer.updateKeys(send: aes128Keys, receive: aes128Keys)
+
+        let plaintext = Data("cross-cipher test".utf8)
+        let encrypted = try aes128Layer.writeApplicationData(plaintext)
+
+        // Try to decrypt with ChaCha20 using different keys
+        let chachaLayer = TLSRecordLayer(cipherSuite: .tls_chacha20_poly1305_sha256)
+        let chachaSecret = SymmetricKey(size: .bits256)
+        let chachaKeys = TrafficKeys(
+            secret: chachaSecret,
+            cipherSuite: .tls_chacha20_poly1305_sha256
+        )
+        chachaLayer.updateReceiveKeys(chachaKeys)
+
+        // Decryption should fail because the keys and cipher suite differ
+        #expect(throws: (any Error).self) {
+            _ = try chachaLayer.processReceivedData(encrypted)
+        }
+    }
+}

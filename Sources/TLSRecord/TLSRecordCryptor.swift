@@ -6,6 +6,14 @@
 /// - Nonce: per-record nonce XOR'd with sequence number
 /// - AAD: The TLS ciphertext record header
 /// - Inner plaintext: content + ContentType(1 byte) + zero padding
+///
+/// ## Security Properties
+///
+/// This implementation uses Apple CryptoKit's AES-GCM and ChaChaPoly,
+/// which provide constant-time AEAD operations. The decrypt method
+/// catches all CryptoKit errors uniformly as `badRecordMac` to avoid
+/// leaking information about the nature of decryption failures
+/// (padding oracle prevention).
 
 import Foundation
 import TLSCore
@@ -36,6 +44,7 @@ public final class TLSRecordCryptor: Sendable {
     /// Update the send (write) keys
     public func updateSendKeys(_ keys: TrafficKeys) {
         state.withLock { state in
+            precondition(keys.iv.count == 12, "TLS 1.3 IV must be exactly 12 bytes")
             state.sendKey = keys.key
             state.sendIV = keys.iv
             state.sendSequenceNumber = 0
@@ -45,6 +54,7 @@ public final class TLSRecordCryptor: Sendable {
     /// Update the receive (read) keys
     public func updateReceiveKeys(_ keys: TrafficKeys) {
         state.withLock { state in
+            precondition(keys.iv.count == 12, "TLS 1.3 IV must be exactly 12 bytes")
             state.receiveKey = keys.key
             state.receiveIV = keys.iv
             state.receiveSequenceNumber = 0

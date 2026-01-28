@@ -207,6 +207,20 @@ public struct TLSConfiguration: Sendable {
 
     // MARK: - Mutual TLS (mTLS) Configuration
 
+    /// Maximum handshake buffer size in bytes (default: 256KB).
+    ///
+    /// Limits the size of the per-encryption-level handshake message buffer
+    /// to prevent DoS attacks via unbounded buffer growth. Increase for
+    /// deployments with very large certificate chains.
+    public var maxHandshakeBufferSize: Int?
+
+    /// Certificate revocation check mode (default: `.none`).
+    ///
+    /// Controls how certificate revocation is checked during handshake validation.
+    /// Currently supports OCSP stapling (synchronous) only. Online OCSP and CRL checks
+    /// require async and are not supported within the synchronous handshake pipeline.
+    public var revocationCheckMode: RevocationCheckMode
+
     /// Whether to require client certificate (server only).
     ///
     /// When `true`, the server sends a CertificateRequest message after EncryptedExtensions,
@@ -217,6 +231,12 @@ public struct TLSConfiguration: Sendable {
     ///
     /// - Note: For libp2p, this should always be `true` as mutual authentication is required.
     public var requireClientCertificate: Bool
+
+    /// Session ticket store for server-side PSK resumption.
+    ///
+    /// When set, the server validates incoming PSK identities against stored sessions
+    /// and can issue new session tickets post-handshake.
+    public var sessionTicketStore: SessionTicketStore?
 
     /// Custom certificate validator for peer certificates.
     ///
@@ -247,6 +267,7 @@ public struct TLSConfiguration: Sendable {
         self.verifyPeer = true
         self.trustedCACertificates = nil
         self.trustedRootCertificates = nil
+        self.expectedPeerPublicKey = nil
         self.allowSelfSigned = false
         self.serverName = nil
         self.sessionTicket = nil
@@ -254,7 +275,9 @@ public struct TLSConfiguration: Sendable {
         self.supportedCipherSuites = [.tls_aes_128_gcm_sha256, .tls_aes_256_gcm_sha384]
         self.supportedGroups = [.x25519, .secp256r1]
         self.replayProtection = nil
+        self.revocationCheckMode = .none
         self.requireClientCertificate = false
+        self.sessionTicketStore = nil
         self.certificateValidator = nil
     }
 
@@ -273,12 +296,14 @@ public struct TLSConfiguration: Sendable {
     public static func server(
         signingKey: any TLSSigningKey,
         certificateChain: [Data],
-        alpnProtocols: [String] = []
+        alpnProtocols: [String] = [],
+        sessionTicketStore: SessionTicketStore? = nil
     ) -> TLSConfiguration {
         var config = TLSConfiguration()
         config.signingKey = signingKey
         config.certificateChain = certificateChain
         config.alpnProtocols = alpnProtocols
+        config.sessionTicketStore = sessionTicketStore
         return config
     }
 
@@ -300,4 +325,29 @@ public struct TLSConfiguration: Sendable {
         (certificateChain != nil && signingKey != nil) ||
         (certificatePath != nil && privateKeyPath != nil)
     }
+
+    /// Validates that this configuration has sensible values.
+    ///
+    /// Call before starting a handshake to catch misconfiguration early
+    /// rather than relying on implicit defaults.
+    ///
+    /// - Throws: `TLSConfigurationError` if the configuration is invalid.
+    public func validate() throws {
+        guard !supportedCipherSuites.isEmpty else {
+            throw TLSConfigurationError.emptyCipherSuiteList
+        }
+        guard !supportedGroups.isEmpty else {
+            throw TLSConfigurationError.emptyGroupList
+        }
+    }
+}
+
+// MARK: - Configuration Error
+
+/// Errors from invalid TLS configuration
+public enum TLSConfigurationError: Error, Sendable {
+    /// No cipher suites configured
+    case emptyCipherSuiteList
+    /// No key exchange groups configured
+    case emptyGroupList
 }

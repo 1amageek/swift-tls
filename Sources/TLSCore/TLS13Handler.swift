@@ -13,9 +13,10 @@ import Synchronization
 public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
 
     /// Maximum size for handshake message buffers per encryption level.
+    /// Default maximum handshake buffer size (256KB).
     /// 256KB accommodates large certificate chains (cross-signed, 4096-bit RSA)
     /// while still providing DoS protection against unbounded buffer growth.
-    private static let maxBufferSize = 262144
+    private static let defaultMaxBufferSize = 262144
 
     private let state = Mutex<HandlerState>(HandlerState())
     private let configuration: TLSConfiguration
@@ -61,6 +62,8 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
     // MARK: - TLS13Provider Protocol
 
     public func startHandshake(isClient: Bool) async throws -> [TLSOutput] {
+        try configuration.validate()
+
         return try state.withLock { state in
             state.isClientMode = isClient
 
@@ -83,7 +86,7 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
                 result.insert(.handshakeData(clientHello, level: .initial), at: 0)
                 return result
             } else {
-                let serverMachine = ServerStateMachine(configuration: configuration)
+                let serverMachine = ServerStateMachine(configuration: configuration, sessionTicketStore: configuration.sessionTicketStore)
                 state.serverStateMachine = serverMachine
                 return []  // Server waits for ClientHello
             }
@@ -97,19 +100,26 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
             buffer.append(data)
 
             // Check buffer size limit to prevent DoS
-            guard buffer.count <= Self.maxBufferSize else {
+            let maxSize = configuration.maxHandshakeBufferSize ?? Self.defaultMaxBufferSize
+            guard buffer.count <= maxSize else {
                 throw TLSError.internalError("Handshake buffer exceeded maximum size")
             }
 
             var outputs: [TLSOutput] = []
 
+            // Track consumed bytes to avoid O(n) copy per message.
+            // We trim the buffer once at the end instead of on each iteration.
+            var consumed = 0
+
             // Process complete messages from buffer
-            while buffer.count >= 4 {
-                // Parse handshake header
-                let (messageType, contentLength) = try HandshakeCodec.decodeHeader(from: buffer)
+            while (buffer.count - consumed) >= 4 {
+                // Parse handshake header from current position
+                let headerStart = buffer.index(buffer.startIndex, offsetBy: consumed)
+                let headerData = Data(buffer[headerStart..<buffer.index(headerStart, offsetBy: 4)])
+                let (messageType, contentLength) = try HandshakeCodec.decodeHeader(from: headerData)
                 let totalLength = 4 + contentLength
 
-                guard buffer.count >= totalLength else {
+                guard (buffer.count - consumed) >= totalLength else {
                     // Need more data
                     if outputs.isEmpty {
                         outputs.append(.needMoreData)
@@ -118,10 +128,10 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
                 }
 
                 // Extract message content
-                let content = buffer.subdata(in: 4..<totalLength)
-
-                // Remove from buffer
-                buffer = Data(buffer.dropFirst(totalLength))
+                let contentStart = buffer.index(headerStart, offsetBy: 4)
+                let contentEnd = buffer.index(headerStart, offsetBy: totalLength)
+                let content = Data(buffer[contentStart..<contentEnd])
+                consumed += totalLength
 
                 // Process the message
                 let messageOutputs = try processMessage(
@@ -131,6 +141,11 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
                     state: &state
                 )
                 outputs.append(contentsOf: messageOutputs)
+            }
+
+            // Trim consumed bytes once (O(remaining) instead of O(N × remaining))
+            if consumed > 0 {
+                buffer = Data(buffer.dropFirst(consumed))
             }
 
             // Store updated buffer
@@ -220,6 +235,20 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
                 return state.clientStateMachine?.validatedPeerInfo
             } else {
                 return state.serverStateMachine?.validatedPeerInfo
+            }
+        }
+    }
+
+    /// Whether PSK (pre-shared key) was used for this handshake.
+    ///
+    /// Returns `true` when the handshake completed with PSK-based authentication
+    /// instead of certificate-based authentication. Available after handshake completion.
+    public var pskUsed: Bool {
+        state.withLock { state in
+            if state.isClientMode {
+                return state.clientStateMachine?.pskUsed ?? false
+            } else {
+                return state.serverStateMachine?.pskUsed ?? false
             }
         }
     }
@@ -329,6 +358,9 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
         switch type {
         case .clientHello, .serverHello:
             expectedLevel = .initial
+        case .endOfEarlyData:
+            // EndOfEarlyData is encrypted under handshake traffic keys (RFC 8446 Section 4.5)
+            expectedLevel = .handshake
         case .encryptedExtensions, .certificateRequest, .certificate, .certificateVerify, .finished:
             expectedLevel = .handshake
         case .keyUpdate, .newSessionTicket:
@@ -489,6 +521,10 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
             // Update state
             state.negotiatedALPN = serverMachine.negotiatedALPN
             state.handshakeComplete = true
+
+        case .endOfEarlyData:
+            // Client signals end of 0-RTT data (RFC 8446 Section 4.5)
+            outputs = try serverMachine.processEndOfEarlyData(content)
 
         case .keyUpdate:
             outputs = try processKeyUpdate(content: content, state: &state)
@@ -680,6 +716,17 @@ public final class ServerStateMachine: Sendable {
 
             let clientHello = try ClientHello.decode(from: data)
 
+            // RFC 8446 Section 4.2.11: pre_shared_key MUST be the last extension
+            // in ClientHello. Servers MUST check this and abort with illegal_parameter
+            // if not satisfied.
+            if clientHello.preSharedKey != nil {
+                guard clientHello.extensions.last?.extensionType == .preSharedKey else {
+                    throw TLSHandshakeError.invalidExtension(
+                        "pre_shared_key must be the last extension in ClientHello"
+                    )
+                }
+            }
+
             // Verify TLS 1.3 support
             guard let supportedVersions = clientHello.supportedVersions,
                   supportedVersions.supportsTLS13 else {
@@ -695,15 +742,24 @@ public final class ServerStateMachine: Sendable {
             }
 
             // RFC 8446 Section 4.1.4: ClientHello2 cipher suite must be
-            // consistent with the cipher suite selected in HelloRetryRequest
+            // consistent with the cipher suite selected in HelloRetryRequest.
+            // Violation sends illegal_parameter alert.
             if isClientHello2 {
                 guard selectedCipherSuite == state.context.cipherSuite else {
-                    throw TLSHandshakeError.unexpectedMessage(
+                    throw TLSHandshakeError.invalidExtension(
                         "ClientHello2 cipher suite inconsistent with HelloRetryRequest"
                     )
                 }
             }
             state.context.cipherSuite = selectedCipherSuite
+
+            // Store client's signature_algorithms for later validation (RFC 8446 Section 4.4.3)
+            for ext in clientHello.extensions {
+                if case .signatureAlgorithms(let sigAlgs) = ext {
+                    state.context.peerSignatureAlgorithms = sigAlgs.supportedSignatureAlgorithms
+                    break
+                }
+            }
 
             // Get client's key share extension
             guard let clientKeyShare = clientHello.keyShare else {
@@ -737,7 +793,12 @@ public final class ServerStateMachine: Sendable {
                 if selectedGroup == nil {
                     // Check if client supports any of our groups
                     let clientSupportedGroups = clientHello.supportedGroups?.namedGroups ?? []
-                    if let commonGroup = serverSupportedGroups.first(where: { clientSupportedGroups.contains($0) }) {
+                    // RFC 8446 Section 4.1.4: The server MUST NOT request a group
+                    // that the client already provided a key_share for.
+                    let clientKeyShareGroups = Set(clientKeyShare.clientShares.map { $0.group })
+                    if let commonGroup = serverSupportedGroups.first(where: {
+                        clientSupportedGroups.contains($0) && !clientKeyShareGroups.contains($0)
+                    }) {
                         return try sendHelloRetryRequest(
                             clientHello: clientHello,
                             clientHelloData: data,
@@ -805,11 +866,10 @@ public final class ServerStateMachine: Sendable {
                     // Validate binder
                     if let binderKey = try? pskKeySchedule.deriveBinderKey(isResumption: true) {
                         let helper = PSKBinderHelper(cipherSuite: session.cipherSuite)
-                        let binderKeyData = binderKey.withUnsafeBytes { Data($0) }
                         // Use cipher suite's hash algorithm (SHA-256 or SHA-384)
                         let transcriptHash = session.cipherSuite.transcriptHash(of: truncatedTranscript)
 
-                        if helper.isValidBinder(forKey: binderKeyData, transcriptHash: transcriptHash, expected: binder) {
+                        if helper.isValidBinder(forKey: binderKey, transcriptHash: transcriptHash, expected: binder) {
                             // PSK validated successfully
                             selectedPskIndex = UInt16(index)
                             state.context.pskUsed = true
@@ -855,8 +915,7 @@ public final class ServerStateMachine: Sendable {
                             transcriptHash: earlyTranscript
                         ) {
                             state.context.clientEarlyTrafficSecret = earlyTrafficSecret
-                            let secretData = earlyTrafficSecret.withUnsafeBytes { Data($0) }
-                            state.context.earlyDataState.clientEarlyTrafficSecret = secretData
+                            state.context.earlyDataState.clientEarlyTrafficSecret = earlyTrafficSecret
                         }
                     }
                     // If replay detected, early data is rejected but handshake continues with 1-RTT
@@ -974,6 +1033,13 @@ public final class ServerStateMachine: Sendable {
                 state.context.transcriptHash.update(with: crMessage)
                 messages.append((crMessage, .handshake))
 
+                // Store the context we sent so we can verify the client echoes it back
+                state.context.certificateRequestContext = certRequest.certificateRequestContext
+
+                // Store the signature algorithms we offered so we can validate
+                // the client's CertificateVerify uses one of them (RFC 8446 Section 4.4.3)
+                state.context.sentSignatureAlgorithms = certRequest.signatureAlgorithms
+
                 // Remember we requested client certificate
                 state.context.expectingClientCertificate = true
             }
@@ -992,6 +1058,14 @@ public final class ServerStateMachine: Sendable {
                 let certMessage = certificate.encodeAsHandshake()
                 state.context.transcriptHash.update(with: certMessage)
                 messages.append((certMessage, .handshake))
+
+                // RFC 8446 Section 4.4.3: Server's CertificateVerify scheme must be
+                // one of the algorithms offered by the client in signature_algorithms.
+                if let clientOffered = state.context.peerSignatureAlgorithms {
+                    guard clientOffered.contains(signingKey.scheme) else {
+                        throw TLSHandshakeError.signatureVerificationFailed
+                    }
+                }
 
                 // Generate CertificateVerify signature
                 // The signature is over the transcript up to (but not including) CertificateVerify
@@ -1113,6 +1187,35 @@ public final class ServerStateMachine: Sendable {
         )
     }
 
+    /// Process EndOfEarlyData message from client (RFC 8446 Section 4.5)
+    ///
+    /// This message indicates the client has finished sending 0-RTT data.
+    /// It is encrypted under the handshake traffic keys.
+    public func processEndOfEarlyData(_ data: Data) throws -> [TLSOutput] {
+        return try state.withLock { state in
+            // EndOfEarlyData is only valid if we accepted early data
+            guard state.context.earlyDataState.earlyDataAccepted else {
+                throw TLSHandshakeError.unexpectedMessage(
+                    "EndOfEarlyData received but early data was not accepted"
+                )
+            }
+
+            // Validate the message (must be empty)
+            let _ = try EndOfEarlyData.decode(from: data)
+
+            // Update transcript
+            let message = HandshakeCodec.encode(type: .endOfEarlyData, content: data)
+            state.context.transcriptHash.update(with: message)
+
+            // Mark early data as no longer active
+            state.context.earlyDataState.attemptingEarlyData = false
+
+            // State remains as is — server continues waiting for client
+            // Certificate (if mTLS) or Finished
+            return []
+        }
+    }
+
     /// Process client Certificate message (for mutual TLS)
     ///
     /// RFC 8446 Section 4.4.2: Client sends Certificate in response to CertificateRequest.
@@ -1125,8 +1228,13 @@ public final class ServerStateMachine: Sendable {
 
             let certificate = try Certificate.decode(from: data)
 
-            // Verify certificate_request_context matches (should be empty for post-handshake auth)
-            // For initial handshake, context is typically empty
+            // RFC 8446 Section 4.4.2: certificate_request_context MUST match
+            // the context sent in CertificateRequest
+            guard certificate.certificateRequestContext == state.context.certificateRequestContext else {
+                throw TLSHandshakeError.invalidExtension(
+                    "certificate_request_context mismatch in client Certificate"
+                )
+            }
 
             // Check if client sent any certificates
             guard !certificate.certificates.isEmpty else {
@@ -1181,6 +1289,14 @@ public final class ServerStateMachine: Sendable {
 
             let certificateVerify = try CertificateVerify.decode(from: data)
 
+            // RFC 8446 Section 4.4.3: The algorithm used in CertificateVerify
+            // must be one we offered in CertificateRequest's signature_algorithms.
+            if let sentAlgs = state.context.sentSignatureAlgorithms {
+                guard sentAlgs.contains(certificateVerify.algorithm) else {
+                    throw TLSHandshakeError.signatureVerificationFailed
+                }
+            }
+
             // Get verification key from client's certificate
             guard let verificationKey = state.context.clientVerificationKey else {
                 throw TLSHandshakeError.internalError("Missing client verification key")
@@ -1228,6 +1344,7 @@ public final class ServerStateMachine: Sendable {
                 // Set up validation options for client certificates
                 var validationOptions = X509ValidationOptions()
                 validationOptions.allowSelfSigned = configuration.allowSelfSigned
+                validationOptions.revocationCheckMode = configuration.revocationCheckMode
                 // RFC 5280 Section 4.2.1.12: Client certificates MUST have clientAuth EKU
                 validationOptions.requiredEKU = .clientAuth
                 // No hostname validation for client certificates
@@ -1296,6 +1413,9 @@ public final class ServerStateMachine: Sendable {
 
             // Transition state
             state.handshakeState = .connected
+
+            // Clear handshake-phase secrets no longer needed
+            state.context.zeroizeSecrets()
 
             return [
                 .handshakeComplete(HandshakeCompleteInfo(

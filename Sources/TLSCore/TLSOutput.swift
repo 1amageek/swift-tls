@@ -21,9 +21,6 @@ public enum TLSOutput: Sendable {
     /// More data is needed before further progress can be made
     case needMoreData
 
-    /// An error occurred during TLS processing
-    case error(TLSError)
-
     /// A TLS alert to be sent to the peer (RFC 8446 Section 6)
     case alert(TLSAlert)
 

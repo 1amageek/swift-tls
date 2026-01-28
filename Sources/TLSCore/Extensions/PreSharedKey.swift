@@ -242,32 +242,13 @@ public struct PSKBinderHelper: Sendable {
         self.cipherSuite = cipherSuite
     }
 
-    /// Derive the binder key from early secret
-    /// - Parameters:
-    ///   - earlySecret: The early secret derived from PSK
-    ///   - isResumption: true for resumption PSK, false for external PSK
-    /// - Returns: The binder key
-    public func binderKey(
-        from earlySecret: Data,
-        isResumption: Bool
-    ) -> Data {
-        let label = isResumption ? "res binder" : "ext binder"
-        let emptyHash = emptyTranscriptHash()
-
-        return deriveSecret(
-            secret: earlySecret,
-            label: label,
-            transcriptHash: emptyHash
-        )
-    }
-
     /// Compute the binder value
     /// - Parameters:
-    ///   - key: The binder key
+    ///   - key: The binder key (SymmetricKey)
     ///   - transcriptHash: Hash of ClientHello up to (but not including) binders
     /// - Returns: The binder value
     public func binder(
-        forKey key: Data,
+        forKey key: SymmetricKey,
         transcriptHash: Data
     ) -> Data {
         // finished_key = HKDF-Expand-Label(binder_key, "finished", "", Hash.length)
@@ -284,7 +265,7 @@ public struct PSKBinderHelper: Sendable {
 
     /// Verify a binder
     public func isValidBinder(
-        forKey key: Data,
+        forKey key: SymmetricKey,
         transcriptHash: Data,
         expected: Data
     ) -> Bool {
@@ -298,20 +279,7 @@ public struct PSKBinderHelper: Sendable {
         cipherSuite.hashLength
     }
 
-    private func emptyTranscriptHash() -> Data {
-        switch cipherSuite {
-        case .tls_aes_256_gcm_sha384:
-            return Data(Crypto.SHA384.hash(data: Data()))
-        default:
-            return Data(Crypto.SHA256.hash(data: Data()))
-        }
-    }
-
-    private func deriveSecret(secret: Data, label: String, transcriptHash: Data) -> Data {
-        hkdfExpandLabel(secret: secret, label: label, context: transcriptHash, length: hashLength)
-    }
-
-    private func hkdfExpandLabel(secret: Data, label: String, context: Data, length: Int) -> Data {
+    private func hkdfExpandLabel(secret: SymmetricKey, label: String, context: Data, length: Int) -> SymmetricKey {
         let fullLabel = "tls13 " + label
         let labelBytes = Data(fullLabel.utf8)
 
@@ -323,35 +291,29 @@ public struct PSKBinderHelper: Sendable {
         hkdfLabel.append(UInt8(context.count))
         hkdfLabel.append(context)
 
-        let key = SymmetricKey(data: secret)
-
         switch cipherSuite {
         case .tls_aes_256_gcm_sha384:
-            let output = HKDF<SHA384>.expand(
-                pseudoRandomKey: key,
+            return HKDF<SHA384>.expand(
+                pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         default:
-            let output = HKDF<SHA256>.expand(
-                pseudoRandomKey: key,
+            return HKDF<SHA256>.expand(
+                pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         }
     }
 
-    private func hmac(key: Data, data: Data) -> Data {
-        let symmetricKey = SymmetricKey(data: key)
-
+    private func hmac(key: SymmetricKey, data: Data) -> Data {
         switch cipherSuite {
         case .tls_aes_256_gcm_sha384:
-            let mac = HMAC<SHA384>.authenticationCode(for: data, using: symmetricKey)
+            let mac = HMAC<SHA384>.authenticationCode(for: data, using: key)
             return Data(mac)
         default:
-            let mac = HMAC<SHA256>.authenticationCode(for: data, using: symmetricKey)
+            let mac = HMAC<SHA256>.authenticationCode(for: data, using: key)
             return Data(mac)
         }
     }

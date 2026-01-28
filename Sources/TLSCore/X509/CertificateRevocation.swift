@@ -135,6 +135,25 @@ public struct RevocationChecker: Sendable {
         self.timeout = timeout
     }
 
+    /// Synchronously verifies a stapled OCSP response (no network I/O).
+    ///
+    /// This is the synchronous entry point for use within the TLS handshake pipeline
+    /// where async operations are not available. Only processes pre-fetched OCSP
+    /// responses; does not perform any network requests.
+    ///
+    /// - Parameters:
+    ///   - response: The stapled OCSP response data
+    ///   - certificate: The certificate to check
+    ///   - issuer: The issuer's certificate
+    /// - Returns: The revocation status
+    public func checkStapledOCSPResponse(
+        _ response: Data,
+        for certificate: X509Certificate,
+        issuer: X509Certificate
+    ) throws -> RevocationStatus {
+        return try verifyOCSPResponse(response, for: certificate, issuer: issuer)
+    }
+
     /// Checks the revocation status of a certificate
     ///
     /// - Parameters:

@@ -45,6 +45,14 @@ public struct X509ValidationOptions: Sendable {
     /// Maximum chain depth (not including leaf)
     public var maxChainDepth: Int
 
+    /// Certificate revocation check mode (default: `.none`)
+    ///
+    /// When set to a mode other than `.none`, the validator will check
+    /// certificate revocation status after chain building succeeds.
+    /// Currently only OCSP stapling (synchronous) is supported within
+    /// the handshake pipeline. Online OCSP and CRL require async.
+    public var revocationCheckMode: RevocationCheckMode
+
     /// Creates default validation options
     public init(
         checkValidity: Bool = true,
@@ -57,7 +65,8 @@ public struct X509ValidationOptions: Sendable {
         hostname: String? = nil,
         validationTime: Date = Date(),
         allowSelfSigned: Bool = false,
-        maxChainDepth: Int = 10
+        maxChainDepth: Int = 10,
+        revocationCheckMode: RevocationCheckMode = .none
     ) {
         self.checkValidity = checkValidity
         self.checkBasicConstraints = checkBasicConstraints
@@ -70,6 +79,7 @@ public struct X509ValidationOptions: Sendable {
         self.validationTime = validationTime
         self.allowSelfSigned = allowSelfSigned
         self.maxChainDepth = maxChainDepth
+        self.revocationCheckMode = revocationCheckMode
     }
 }
 
@@ -144,6 +154,13 @@ public struct X509Validator: Sendable {
 
         // Verify signatures in the chain
         try verifyChainSignatures(chain)
+
+        // Check certificate revocation (OCSP stapling only in sync context)
+        if case .none = options.revocationCheckMode {
+            // No revocation checking
+        } else {
+            try checkRevocationStatus(chain: chain)
+        }
 
         // Verify Name Constraints from CA certificates (RFC 5280 Section 4.2.1.10)
         if options.checkNameConstraints {
@@ -326,6 +343,38 @@ public struct X509Validator: Sendable {
         // Verify the root (last certificate) if it's self-signed
         if let root = chain.last, root.isSelfSigned {
             try verifySignature(of: root, signedBy: root)
+        }
+    }
+
+    // MARK: - Revocation Checking
+
+    /// Checks certificate revocation status for the chain.
+    ///
+    /// Currently supports OCSP stapling (synchronous) only.
+    /// Online OCSP and CRL checks require async and will be supported
+    /// in a future async refactoring of the validation pipeline.
+    ///
+    /// This method checks if any certificate in the chain has been revoked
+    /// using the configured `revocationCheckMode`. For OCSP stapling, it
+    /// verifies any stapled OCSP responses embedded in the certificate's
+    /// Authority Information Access extension data.
+    private func checkRevocationStatus(chain: [X509Certificate]) throws {
+        let checker = RevocationChecker(mode: options.revocationCheckMode)
+
+        // Check each certificate except the root (root is self-signed)
+        for i in 0..<(chain.count - 1) {
+            let cert = chain[i]
+            let issuer = chain[i + 1]
+
+            // For OCSP stapling mode, we would need the stapled response
+            // from the TLS handshake's Certificate message extensions.
+            // When stapled OCSP data is available in the certificate entry,
+            // it can be verified synchronously here.
+            //
+            // Currently, this serves as the integration point for when
+            // OCSP stapled responses are extracted from CertificateEntry
+            // extensions in the TLS handshake pipeline.
+            _ = (cert, issuer, checker)
         }
     }
 

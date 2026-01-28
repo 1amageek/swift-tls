@@ -14,6 +14,7 @@
 /// a PSK that can be used for session resumption.
 
 import Foundation
+import Crypto
 
 // MARK: - NewSessionTicket Message
 
@@ -137,7 +138,7 @@ public struct SessionTicketData: Sendable {
     public let ticket: Data
 
     /// Resumption PSK derived from resumption_master_secret
-    public let resumptionPSK: Data
+    public let resumptionPSK: SymmetricKey
 
     /// Maximum early data size (0 if not supported)
     public let maxEarlyDataSize: UInt32
@@ -164,7 +165,7 @@ public struct SessionTicketData: Sendable {
 
     public init(
         ticket: Data,
-        resumptionPSK: Data,
+        resumptionPSK: SymmetricKey,
         maxEarlyDataSize: UInt32 = 0,
         ticketAgeAdd: UInt32,
         receiveTime: Date = Date(),

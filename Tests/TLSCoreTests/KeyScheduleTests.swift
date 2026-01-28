@@ -222,4 +222,140 @@ struct KeyScheduleTests {
         let emptyHash = SHA256.hash(data: Data())
         #expect(hash == Data(emptyHash))
     }
+
+    // MARK: - SHA-384 Key Schedule Tests
+
+    @Test("SHA-384 key schedule derives 384-bit secrets")
+    func testSHA384KeySchedule() throws {
+        var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_256_gcm_sha384)
+
+        // P-384 shared secret for SHA-384 cipher suite
+        let privateKey = P384.KeyAgreement.PrivateKey()
+        let publicKey = privateKey.publicKey
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+
+        let transcriptHash = Data(repeating: 0xAA, count: 48)
+
+        let (clientSecret, serverSecret) = try keySchedule.deriveHandshakeSecrets(
+            sharedSecret: sharedSecret,
+            transcriptHash: transcriptHash
+        )
+
+        #expect(clientSecret.bitCount == 384)
+        #expect(serverSecret.bitCount == 384)
+    }
+
+    @Test("Exporter master secret derivation")
+    func testExporterMasterSecret() throws {
+        var keySchedule = TLSKeySchedule()
+
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        let publicKey = privateKey.publicKey
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let hsTranscript = Data(repeating: 0xAA, count: 32)
+
+        _ = try keySchedule.deriveHandshakeSecrets(
+            sharedSecret: sharedSecret,
+            transcriptHash: hsTranscript
+        )
+
+        let appTranscript = Data(repeating: 0xBB, count: 32)
+        _ = try keySchedule.deriveApplicationSecrets(transcriptHash: appTranscript)
+
+        let exporterTranscript = Data(repeating: 0xCC, count: 32)
+        let exporterSecret = try keySchedule.deriveExporterMasterSecret(
+            transcriptHash: exporterTranscript
+        )
+
+        #expect(exporterSecret.bitCount == 256)
+        // Verify it is non-zero
+        let exporterData = exporterSecret.withUnsafeBytes { Data($0) }
+        #expect(exporterData != Data(repeating: 0, count: 32))
+    }
+
+    @Test("Resumption master secret derivation")
+    func testResumptionMasterSecret() throws {
+        var keySchedule = TLSKeySchedule()
+
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        let publicKey = privateKey.publicKey
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let hsTranscript = Data(repeating: 0xAA, count: 32)
+
+        _ = try keySchedule.deriveHandshakeSecrets(
+            sharedSecret: sharedSecret,
+            transcriptHash: hsTranscript
+        )
+
+        let appTranscript = Data(repeating: 0xBB, count: 32)
+        _ = try keySchedule.deriveApplicationSecrets(transcriptHash: appTranscript)
+
+        let resumptionTranscript = Data(repeating: 0xDD, count: 32)
+        let resumptionSecret = try keySchedule.deriveResumptionMasterSecret(
+            transcriptHash: resumptionTranscript
+        )
+
+        #expect(resumptionSecret.bitCount == 256)
+        let resumptionData = resumptionSecret.withUnsafeBytes { Data($0) }
+        #expect(resumptionData != Data(repeating: 0, count: 32))
+    }
+
+    @Test("Binder key derivation from PSK")
+    func testBinderKeyDerivation() throws {
+        var keySchedule = TLSKeySchedule()
+
+        let psk = SymmetricKey(data: Data(repeating: 0x42, count: 32))
+        keySchedule.deriveEarlySecret(psk: psk)
+
+        let binderKey = try keySchedule.deriveBinderKey(isResumption: true)
+
+        #expect(binderKey.bitCount == 256)
+        let binderData = binderKey.withUnsafeBytes { Data($0) }
+        #expect(binderData != Data(repeating: 0, count: 32))
+    }
+
+    @Test("Key schedule state error when skipping handshake secrets")
+    func testKeyScheduleStateError() throws {
+        var keySchedule = TLSKeySchedule()
+
+        // Try to derive application secrets without first deriving handshake secrets
+        let appTranscript = Data(repeating: 0xBB, count: 32)
+        #expect(throws: TLSKeyScheduleError.self) {
+            _ = try keySchedule.deriveApplicationSecrets(transcriptHash: appTranscript)
+        }
+    }
+
+    @Test("Export keying material produces correct length")
+    func testExportKeyingMaterial() throws {
+        var keySchedule = TLSKeySchedule()
+
+        let privateKey = Curve25519.KeyAgreement.PrivateKey()
+        let publicKey = privateKey.publicKey
+        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let hsTranscript = Data(repeating: 0xAA, count: 32)
+
+        _ = try keySchedule.deriveHandshakeSecrets(
+            sharedSecret: sharedSecret,
+            transcriptHash: hsTranscript
+        )
+
+        let appTranscript = Data(repeating: 0xBB, count: 32)
+        _ = try keySchedule.deriveApplicationSecrets(transcriptHash: appTranscript)
+
+        let exporterTranscript = Data(repeating: 0xCC, count: 32)
+        let exporterSecret = try keySchedule.deriveExporterMasterSecret(
+            transcriptHash: exporterTranscript
+        )
+
+        let desiredLength = 64
+        let ekm = keySchedule.exportKeyingMaterial(
+            exporterMasterSecret: exporterSecret,
+            label: "test-label",
+            context: Data("test-context".utf8),
+            length: desiredLength
+        )
+
+        #expect(ekm.count == desiredLength)
+        #expect(ekm != Data(repeating: 0, count: desiredLength))
+    }
 }

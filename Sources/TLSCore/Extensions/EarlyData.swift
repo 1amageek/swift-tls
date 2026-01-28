@@ -20,6 +20,7 @@
 /// ```
 
 import Foundation
+import Crypto
 
 // MARK: - Early Data Extension
 
@@ -118,7 +119,7 @@ public struct EarlyDataState: Sendable {
     public var earlyDataSent: UInt32 = 0
 
     /// Client early traffic secret (for 0-RTT encryption)
-    public var clientEarlyTrafficSecret: Data?
+    public var clientEarlyTrafficSecret: SymmetricKey?
 
     public init() {}
 

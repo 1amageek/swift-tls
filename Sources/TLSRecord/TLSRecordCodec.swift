@@ -147,6 +147,10 @@ public enum TLSRecordError: Error, Sendable {
     case sequenceNumberOverflow
     /// Application data received before encryption is active
     case unexpectedPlaintextApplicationData
+    /// Plaintext handshake record received after encryption is active (RFC 8446 Section 5)
+    case unexpectedPlaintextHandshake
+    /// Plaintext alert record received after encryption is active (RFC 8446 Section 5)
+    case unexpectedPlaintextAlert
     /// Receive buffer exceeded maximum size
     case bufferOverflow
 }

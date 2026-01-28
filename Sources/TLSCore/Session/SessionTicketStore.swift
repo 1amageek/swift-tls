@@ -226,11 +226,10 @@ public final class SessionTicketStore: Sendable {
 
         // Compute expected binder
         let helper = PSKBinderHelper(cipherSuite: cipherSuite)
-        let binderKeyData = binderKey.withUnsafeBytes { Data($0) }
         let transcriptHash = computeTranscriptHash(truncatedTranscript, cipherSuite: cipherSuite)
 
         return helper.isValidBinder(
-            forKey: binderKeyData,
+            forKey: binderKey,
             transcriptHash: transcriptHash,
             expected: binder
         )

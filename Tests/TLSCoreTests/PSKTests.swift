@@ -106,7 +106,7 @@ struct SessionTicketDataTests {
     func ticketValidity() {
         let ticket = SessionTicketData(
             ticket: Data([0x01, 0x02, 0x03]),
-            resumptionPSK: Data(repeating: 0xAB, count: 32),
+            resumptionPSK: SymmetricKey(data: Data(repeating: 0xAB, count: 32)),
             maxEarlyDataSize: 0xFFFFFFFF,
             ticketAgeAdd: 0x12345678,
             receiveTime: Date(),
@@ -128,7 +128,7 @@ struct SessionTicketDataTests {
         let now = Date()
         let ticket = SessionTicketData(
             ticket: Data([0x01]),
-            resumptionPSK: Data(repeating: 0, count: 32),
+            resumptionPSK: SymmetricKey(data: Data(repeating: 0, count: 32)),
             maxEarlyDataSize: 0,
             ticketAgeAdd: 0x12345678,
             receiveTime: now.addingTimeInterval(-10), // 10 seconds ago
@@ -460,24 +460,23 @@ struct TLSKeySchedulePSKTests {
 struct PSKBinderHelperTests {
 
     @Test("Compute and verify binder")
-    func computeAndVerifyBinder() {
+    func computeAndVerifyBinder() throws {
         let helper = PSKBinderHelper(cipherSuite: .tls_aes_128_gcm_sha256)
 
-        // Create a test early secret
-        let earlySecretData = Data(SHA256.hash(data: Data([0x01, 0x02, 0x03])))
-
-        // Derive binder key
-        let binderKeyData = helper.binderKey(from: earlySecretData, isResumption: true)
-        #expect(binderKeyData.count == 32)
+        // Derive binder key via TLSKeySchedule
+        let psk = SymmetricKey(data: Data(repeating: 0xAB, count: 32))
+        var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
+        keySchedule.deriveEarlySecret(psk: psk)
+        let binderKey = try keySchedule.deriveBinderKey(isResumption: true)
 
         // Compute binder
         let transcriptHash = Data(SHA256.hash(data: Data([0xAA, 0xBB])))
-        let binderValue = helper.binder(forKey: binderKeyData, transcriptHash: transcriptHash)
+        let binderValue = helper.binder(forKey: binderKey, transcriptHash: transcriptHash)
         #expect(binderValue.count == 32)
 
         // Verify should succeed with correct binder
         let verified = helper.isValidBinder(
-            forKey: binderKeyData,
+            forKey: binderKey,
             transcriptHash: transcriptHash,
             expected: binderValue
         )
@@ -486,7 +485,7 @@ struct PSKBinderHelperTests {
         // Verify should fail with wrong binder
         let wrongBinder = Data(repeating: 0xFF, count: 32)
         let notVerified = helper.isValidBinder(
-            forKey: binderKeyData,
+            forKey: binderKey,
             transcriptHash: transcriptHash,
             expected: wrongBinder
         )
@@ -494,12 +493,16 @@ struct PSKBinderHelperTests {
     }
 
     @Test("Different label for external vs resumption PSK")
-    func differentLabels() {
-        let helper = PSKBinderHelper(cipherSuite: .tls_aes_128_gcm_sha256)
-        let earlySecretData = Data(SHA256.hash(data: Data([0x01, 0x02, 0x03])))
+    func differentLabels() throws {
+        let psk = SymmetricKey(data: Data(repeating: 0xAB, count: 32))
 
-        let resBinderKey = helper.binderKey(from: earlySecretData, isResumption: true)
-        let extBinderKey = helper.binderKey(from: earlySecretData, isResumption: false)
+        var resKeySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
+        resKeySchedule.deriveEarlySecret(psk: psk)
+        let resBinderKey = try resKeySchedule.deriveBinderKey(isResumption: true)
+
+        var extKeySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
+        extKeySchedule.deriveEarlySecret(psk: psk)
+        let extBinderKey = try extKeySchedule.deriveBinderKey(isResumption: false)
 
         // Should be different due to different labels
         #expect(resBinderKey != extBinderKey)

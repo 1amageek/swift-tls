@@ -287,6 +287,18 @@ public struct HandshakeContext: Sendable {
     /// in the Certificate message."
     public var certificateRequestContext: Data = Data()
 
+    /// Peer's offered signature algorithms (from ClientHello or CertificateRequest).
+    ///
+    /// Server stores the client's signature_algorithms extension.
+    /// Client stores the CertificateRequest's signature_algorithms.
+    /// Used to validate that CertificateVerify uses a negotiated algorithm.
+    public var peerSignatureAlgorithms: [SignatureScheme]?
+
+    /// Signature algorithms we sent in CertificateRequest (server-side).
+    ///
+    /// Used to validate that the client's CertificateVerify uses an algorithm we offered.
+    public var sentSignatureAlgorithms: [SignatureScheme]?
+
     /// Whether server is expecting client certificate (server-side flag).
     ///
     /// Set to `true` when server sends CertificateRequest.
@@ -316,5 +328,26 @@ public struct HandshakeContext: Sendable {
     public init() {
         self.transcriptHash = TranscriptHash()
         self.keySchedule = TLSKeySchedule()
+    }
+
+    /// Releases handshake-phase secrets by setting SymmetricKey references to nil.
+    ///
+    /// Secrets retained: `applicationSecret`, `exporterMasterSecret`, `resumptionMasterSecret`
+    /// (used for KeyUpdate, Exporter, and NewSessionTicket respectively).
+    ///
+    /// ## Limitations
+    ///
+    /// Swift/CryptoKit does not expose secure memory zeroing APIs.
+    /// Setting secrets to `nil` releases the ARC reference, but actual
+    /// memory contents may persist until overwritten by the allocator.
+    /// For high-security deployments, consider process isolation.
+    public mutating func zeroizeSecrets() {
+        self.sharedSecret = nil
+        self.keyExchange = nil
+        self.clientHandshakeSecret = nil
+        self.serverHandshakeSecret = nil
+        self.binderKey = nil
+        self.clientEarlyTrafficSecret = nil
+        self.earlyDataState.clientEarlyTrafficSecret = nil
     }
 }

@@ -214,10 +214,7 @@ public struct TLSKeySchedule: Sendable {
             transcriptHash: transcriptHash
         )
 
-        return (
-            client: SymmetricKey(data: clientSecret),
-            server: SymmetricKey(data: serverSecret)
-        )
+        return (client: clientSecret, server: serverSecret)
     }
 
     // MARK: - Application Secret
@@ -261,10 +258,7 @@ public struct TLSKeySchedule: Sendable {
             transcriptHash: transcriptHash
         )
 
-        return (
-            client: SymmetricKey(data: clientSecret),
-            server: SymmetricKey(data: serverSecret)
-        )
+        return (client: clientSecret, server: serverSecret)
     }
 
     // MARK: - Key Update
@@ -277,13 +271,12 @@ public struct TLSKeySchedule: Sendable {
     ) -> SymmetricKey {
         // application_traffic_secret_N+1 =
         //     HKDF-Expand-Label(application_traffic_secret_N, "traffic upd", "", Hash.length)
-        let nextSecretData = hkdfExpandLabel(
+        hkdfExpandLabel(
             secret: currentSecret,
             label: "traffic upd",
             context: Data(),
             length: hashLength
         )
-        return SymmetricKey(data: nextSecretData)
     }
 
     // MARK: - Finished Key
@@ -293,13 +286,12 @@ public struct TLSKeySchedule: Sendable {
     /// - Returns: The finished key
     public func finishedKey(from baseKey: SymmetricKey) -> SymmetricKey {
         // finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
-        let finishedKeyData = hkdfExpandLabel(
+        hkdfExpandLabel(
             secret: baseKey,
             label: "finished",
             context: Data(),
             length: hashLength
         )
-        return SymmetricKey(data: finishedKeyData)
     }
 
     /// The finished verify_data
@@ -338,13 +330,11 @@ public struct TLSKeySchedule: Sendable {
             throw TLSKeyScheduleError.invalidState("Expected master secret state")
         }
 
-        let exporterSecret = deriveSecret(
+        return deriveSecret(
             secret: masterSecret,
             label: "exp master",
             transcriptHash: transcriptHash
         )
-
-        return SymmetricKey(data: exporterSecret)
     }
 
     // MARK: - Resumption Master Secret
@@ -357,13 +347,11 @@ public struct TLSKeySchedule: Sendable {
             throw TLSKeyScheduleError.invalidState("Expected master secret state")
         }
 
-        let resumptionSecret = deriveSecret(
+        return deriveSecret(
             secret: masterSecret,
             label: "res master",
             transcriptHash: transcriptHash
         )
-
-        return SymmetricKey(data: resumptionSecret)
     }
 
     /// Derive a resumption PSK from the resumption master secret and ticket nonce
@@ -376,13 +364,12 @@ public struct TLSKeySchedule: Sendable {
         ticketNonce: Data
     ) -> SymmetricKey {
         // PSK = HKDF-Expand-Label(resumption_master_secret, "resumption", ticket_nonce, Hash.length)
-        let pskData = hkdfExpandLabel(
+        hkdfExpandLabel(
             secret: resumptionMasterSecret,
             label: "resumption",
             context: ticketNonce,
             length: hashLength
         )
-        return SymmetricKey(data: pskData)
     }
 
     // MARK: - PSK/Early Secrets
@@ -399,13 +386,11 @@ public struct TLSKeySchedule: Sendable {
         let label = isResumption ? "res binder" : "ext binder"
         let emptyHash = emptyTranscriptHash()
 
-        let binderKeyData = deriveSecret(
+        return deriveSecret(
             secret: earlySecret,
             label: label,
             transcriptHash: emptyHash
         )
-
-        return SymmetricKey(data: binderKeyData)
     }
 
     /// Derive the client early traffic secret (for 0-RTT)
@@ -416,13 +401,11 @@ public struct TLSKeySchedule: Sendable {
             throw TLSKeyScheduleError.invalidState("Expected early secret state")
         }
 
-        let clientEarlySecretData = deriveSecret(
+        return deriveSecret(
             secret: earlySecret,
             label: "c e traffic",
             transcriptHash: transcriptHash
         )
-
-        return SymmetricKey(data: clientEarlySecretData)
     }
 
     /// Derive the early exporter master secret
@@ -433,13 +416,11 @@ public struct TLSKeySchedule: Sendable {
             throw TLSKeyScheduleError.invalidState("Expected early secret state")
         }
 
-        let earlyExporterSecretData = deriveSecret(
+        return deriveSecret(
             secret: earlySecret,
             label: "e exp master",
             transcriptHash: transcriptHash
         )
-
-        return SymmetricKey(data: earlyExporterSecretData)
     }
 
     /// The current early secret (for PSK-related computations)
@@ -462,7 +443,7 @@ public struct TLSKeySchedule: Sendable {
 
     // MARK: - Private Helpers
 
-    /// HKDF-Extract
+    /// HKDF-Extract with Data salt
     private func hkdfExtract(salt: Data, ikm: SymmetricKey) -> SymmetricKey {
         switch cipherSuite {
         case .tls_aes_256_gcm_sha384:
@@ -480,12 +461,33 @@ public struct TLSKeySchedule: Sendable {
         }
     }
 
-    /// Derive-Secret
+    /// HKDF-Extract with SymmetricKey salt (for derived intermediates)
+    private func hkdfExtract(salt: SymmetricKey, ikm: SymmetricKey) -> SymmetricKey {
+        salt.withUnsafeBytes { saltBytes in
+            let saltData = Data(saltBytes)
+            switch cipherSuite {
+            case .tls_aes_256_gcm_sha384:
+                let prk = HKDF<SHA384>.extract(
+                    inputKeyMaterial: ikm,
+                    salt: saltData
+                )
+                return SymmetricKey(data: prk)
+            default:
+                let prk = HKDF<SHA256>.extract(
+                    inputKeyMaterial: ikm,
+                    salt: saltData
+                )
+                return SymmetricKey(data: prk)
+            }
+        }
+    }
+
+    /// Derive-Secret — returns SymmetricKey to avoid intermediate Data copies
     private func deriveSecret(
         secret: SymmetricKey,
         label: String,
         transcriptHash: Data
-    ) -> Data {
+    ) -> SymmetricKey {
         hkdfExpandLabel(
             secret: secret,
             label: label,
@@ -494,30 +496,28 @@ public struct TLSKeySchedule: Sendable {
         )
     }
 
-    /// HKDF-Expand-Label
+    /// HKDF-Expand-Label — returns SymmetricKey directly (no intermediate Data)
     private func hkdfExpandLabel(
         secret: SymmetricKey,
         label: String,
         context: Data,
         length: Int
-    ) -> Data {
+    ) -> SymmetricKey {
         // Fast path: use pre-computed HkdfLabel for empty context
         if context.isEmpty, let precomputed = TLSHKDFLabels.precomputed(label: label, length: length) {
             switch cipherSuite {
             case .tls_aes_256_gcm_sha384:
-                let output = HKDF<SHA384>.expand(
+                return HKDF<SHA384>.expand(
                     pseudoRandomKey: secret,
                     info: precomputed,
                     outputByteCount: length
                 )
-                return output.withUnsafeBytes { Data($0) }
             default:
-                let output = HKDF<SHA256>.expand(
+                return HKDF<SHA256>.expand(
                     pseudoRandomKey: secret,
                     info: precomputed,
                     outputByteCount: length
                 )
-                return output.withUnsafeBytes { Data($0) }
             }
         }
 
@@ -539,20 +539,34 @@ public struct TLSKeySchedule: Sendable {
         // HKDF-Expand based on cipher suite
         switch cipherSuite {
         case .tls_aes_256_gcm_sha384:
-            let output = HKDF<SHA384>.expand(
+            return HKDF<SHA384>.expand(
                 pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         default:
-            let output = HKDF<SHA256>.expand(
+            return HKDF<SHA256>.expand(
                 pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         }
+    }
+
+    /// HKDF-Expand-Label returning Data (for IV and export outputs)
+    private func hkdfExpandLabelData(
+        secret: SymmetricKey,
+        label: String,
+        context: Data,
+        length: Int
+    ) -> Data {
+        let key = hkdfExpandLabel(
+            secret: secret,
+            label: label,
+            context: context,
+            length: length
+        )
+        return key.withUnsafeBytes { Data($0) }
     }
 
     /// Compute hash of data using this key schedule's hash algorithm
@@ -595,8 +609,8 @@ public struct TLSKeySchedule: Sendable {
 
         // Step 2: HKDF-Expand-Label(derived_secret, "exporter", Hash(context), length)
         let contextHash = context.map { computeHash($0) } ?? emptyHash
-        return hkdfExpandLabel(
-            secret: SymmetricKey(data: derivedSecret),
+        return hkdfExpandLabelData(
+            secret: derivedSecret,
             label: "exporter",
             context: contextHash,
             length: length
@@ -619,7 +633,7 @@ public struct TrafficKeys: Sendable {
     /// The encryption key
     public let key: SymmetricKey
 
-    /// The IV
+    /// The IV (12 bytes for TLS 1.3, kept as Data for XOR with sequence number)
     public let iv: Data
 
     /// Derives traffic keys from a traffic secret
@@ -635,46 +649,42 @@ public struct TrafficKeys: Sendable {
         let keyLength = cipherSuite.keyLength
         let ivLength = cipherSuite.ivLength
 
-        let keyData = Self.hkdfExpandLabel(
+        self.key = Self.hkdfExpandLabel(
             secret: secret,
             label: "key",
             length: keyLength,
             cipherSuite: cipherSuite
         )
-        let ivData = Self.hkdfExpandLabel(
+        self.iv = Self.hkdfExpandLabelData(
             secret: secret,
             label: "iv",
             length: ivLength,
             cipherSuite: cipherSuite
         )
-
-        self.key = SymmetricKey(data: keyData)
-        self.iv = ivData
     }
 
+    /// HKDF-Expand-Label returning SymmetricKey (for encryption keys)
     private static func hkdfExpandLabel(
         secret: SymmetricKey,
         label: String,
         length: Int,
         cipherSuite: CipherSuite
-    ) -> Data {
+    ) -> SymmetricKey {
         // Fast path: use pre-computed HkdfLabel for "key" and "iv"
         if let precomputed = TLSHKDFLabels.precomputed(label: label, length: length) {
             switch cipherSuite {
             case .tls_aes_256_gcm_sha384:
-                let output = HKDF<SHA384>.expand(
+                return HKDF<SHA384>.expand(
                     pseudoRandomKey: secret,
                     info: precomputed,
                     outputByteCount: length
                 )
-                return output.withUnsafeBytes { Data($0) }
             default:
-                let output = HKDF<SHA256>.expand(
+                return HKDF<SHA256>.expand(
                     pseudoRandomKey: secret,
                     info: precomputed,
                     outputByteCount: length
                 )
-                return output.withUnsafeBytes { Data($0) }
             }
         }
 
@@ -691,19 +701,28 @@ public struct TrafficKeys: Sendable {
 
         switch cipherSuite {
         case .tls_aes_256_gcm_sha384:
-            let output = HKDF<SHA384>.expand(
+            return HKDF<SHA384>.expand(
                 pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         default:
-            let output = HKDF<SHA256>.expand(
+            return HKDF<SHA256>.expand(
                 pseudoRandomKey: secret,
                 info: hkdfLabel,
                 outputByteCount: length
             )
-            return output.withUnsafeBytes { Data($0) }
         }
+    }
+
+    /// HKDF-Expand-Label returning Data (for IV values)
+    private static func hkdfExpandLabelData(
+        secret: SymmetricKey,
+        label: String,
+        length: Int,
+        cipherSuite: CipherSuite
+    ) -> Data {
+        let key = hkdfExpandLabel(secret: secret, label: label, length: length, cipherSuite: cipherSuite)
+        return key.withUnsafeBytes { Data($0) }
     }
 }

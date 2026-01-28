@@ -36,7 +36,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TLSCoreTests",
-            dependencies: ["TLSCore"],
+            dependencies: ["TLSCore", "TLSRecord"],
             path: "Tests/TLSCoreTests"
         ),
         .testTarget(

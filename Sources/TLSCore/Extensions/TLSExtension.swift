@@ -174,11 +174,20 @@ public enum TLSExtension: Sendable {
     }
 
     /// Decode multiple extensions from a Data blob with explicit context.
+    ///
+    /// RFC 8446 Section 4.2: "There MUST NOT be more than one extension
+    /// of the same type in a given extension block."
     public static func decodeExtensions(from data: Data, context: MessageContext) throws -> [TLSExtension] {
         var reader = TLSReader(data: data)
         var extensions: [TLSExtension] = []
+        var seenTypes: Set<UInt16> = []
         while reader.hasMore {
             let ext = try decode(from: &reader, context: context)
+            guard seenTypes.insert(ext.rawType).inserted else {
+                throw TLSHandshakeError.invalidExtension(
+                    "Duplicate extension type: 0x\(String(ext.rawType, radix: 16))"
+                )
+            }
             extensions.append(ext)
         }
         return extensions

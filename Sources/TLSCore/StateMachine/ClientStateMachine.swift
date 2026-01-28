@@ -47,8 +47,11 @@ public final class ClientStateMachine: Sendable {
             state.context.localTransportParameters = transportParameters
             state.context.sessionTicket = sessionTicket
 
-            // Generate ephemeral key for key exchange (prefer X25519)
-            let keyExchange = try KeyExchange.generate(for: .x25519)
+            // Generate ephemeral key for key exchange (use first configured group)
+            guard let preferredGroup = configuration.supportedGroups.first else {
+                throw TLSHandshakeError.noKeyShareMatch
+            }
+            let keyExchange = try KeyExchange.generate(for: preferredGroup)
             state.context.keyExchange = keyExchange
 
             // Generate random
@@ -69,8 +72,8 @@ public final class ClientStateMachine: Sendable {
             // supported_versions (required for TLS 1.3)
             extensions.append(.supportedVersionsClient([TLSConstants.version13]))
 
-            // supported_groups
-            extensions.append(.supportedGroupsList([.x25519, .secp256r1]))
+            // supported_groups (from configuration)
+            extensions.append(.supportedGroupsList(configuration.supportedGroups))
 
             // signature_algorithms - comprehensive list for wide compatibility
             extensions.append(.signatureAlgorithmsList([
@@ -100,8 +103,8 @@ public final class ClientStateMachine: Sendable {
                 extensions.append(.transportParameters(params))
             }
 
-            // Build the cipher suites list
-            var cipherSuites: [CipherSuite] = [.tls_aes_128_gcm_sha256]
+            // Build the cipher suites list (from configuration)
+            var cipherSuites: [CipherSuite] = configuration.supportedCipherSuites
 
             // PSK-related extensions (if we have a session ticket)
             var pskExtensionsInfo: (offered: OfferedPsks, ticket: SessionTicketData)?
@@ -136,7 +139,7 @@ public final class ClientStateMachine: Sendable {
                 pskExtensionsInfo = (offered: offeredPsks, ticket: ticket)
 
                 // Initialize key schedule with PSK
-                let psk = SymmetricKey(data: ticket.resumptionPSK)
+                let psk = ticket.resumptionPSK
                 state.context.keySchedule = TLSKeySchedule(cipherSuite: ticket.cipherSuite)
                 state.context.keySchedule.deriveEarlySecret(psk: psk)
 
@@ -281,6 +284,16 @@ public final class ClientStateMachine: Sendable {
                 throw TLSHandshakeError.noCipherSuiteMatch
             }
 
+            // RFC 8446 Section 4.1.4: After HRR, ServerHello cipher suite
+            // MUST match the one selected in HelloRetryRequest.
+            if state.context.receivedHelloRetryRequest {
+                guard serverHello.cipherSuite == state.context.cipherSuite else {
+                    throw TLSHandshakeError.invalidExtension(
+                        "ServerHello cipher suite differs from HelloRetryRequest"
+                    )
+                }
+            }
+
             // Check for PSK acceptance
             var pskAccepted = false
             if let pskExtension = serverHello.extensions.first(where: { $0.extensionType == .preSharedKey }) {
@@ -380,15 +393,22 @@ public final class ClientStateMachine: Sendable {
         }
         state.context.receivedHelloRetryRequest = true
 
+        // RFC 8446 Section 4.2.10: If 0-RTT was attempted, HRR means early data
+        // must be abandoned. Server will not accept 0-RTT after HRR.
+        state.context.earlyDataState.attemptingEarlyData = false
+        state.context.earlyDataState.earlyDataAccepted = false
+
         // Get the requested group from HRR
         guard let requestedGroup = hrr.helloRetryRequestSelectedGroup else {
             throw TLSHandshakeError.missingExtension("key_share in HelloRetryRequest")
         }
 
-        // Verify we support the requested group
-        let supportedGroups: [NamedGroup] = [.x25519, .secp256r1]
-        guard supportedGroups.contains(requestedGroup) else {
-            throw TLSHandshakeError.noKeyShareMatch
+        // Verify we support the requested group (from configuration)
+        // RFC 8446 Section 4.1.4: illegal_parameter if group is not supported
+        guard state.configuration.supportedGroups.contains(requestedGroup) else {
+            throw TLSHandshakeError.invalidExtension(
+                "HelloRetryRequest selected unsupported group"
+            )
         }
 
         // Store cipher suite from HRR
@@ -434,8 +454,8 @@ public final class ClientStateMachine: Sendable {
         // supported_versions (required for TLS 1.3)
         extensions.append(.supportedVersionsClient([TLSConstants.version13]))
 
-        // supported_groups
-        extensions.append(.supportedGroupsList([.x25519, .secp256r1]))
+        // supported_groups (from configuration)
+        extensions.append(.supportedGroupsList(state.configuration.supportedGroups))
 
         // signature_algorithms - comprehensive list for wide compatibility
         extensions.append(.signatureAlgorithmsList([
@@ -635,6 +655,10 @@ public final class ClientStateMachine: Sendable {
             state.context.certificateRequestContext = certRequest.certificateRequestContext
             state.context.clientCertificateRequested = true
 
+            // Store the server's requested signature algorithms for validation
+            // when constructing our CertificateVerify (RFC 8446 Section 4.4.3)
+            state.context.peerSignatureAlgorithms = certRequest.signatureAlgorithms
+
             // Update transcript
             let message = HandshakeCodec.encode(type: .certificateRequest, content: data)
             state.context.transcriptHash.update(with: message)
@@ -691,6 +715,7 @@ public final class ClientStateMachine: Sendable {
                 var validationOptions = X509ValidationOptions()
                 validationOptions.hostname = state.configuration.serverName
                 validationOptions.allowSelfSigned = state.configuration.allowSelfSigned
+                validationOptions.revocationCheckMode = state.configuration.revocationCheckMode
                 // RFC 5280 Section 4.2.1.12: Server certificates MUST have serverAuth EKU
                 validationOptions.requiredEKU = .serverAuth
 
@@ -856,10 +881,21 @@ public final class ClientStateMachine: Sendable {
             )
             state.context.exporterMasterSecret = exporterMasterSecret
 
+            // === EndOfEarlyData (RFC 8446 Section 4.5) ===
+            // If early data was accepted, client MUST send EndOfEarlyData before
+            // Certificate/CertificateVerify/Finished to signal the end of 0-RTT data.
+            var clientCertMessages: [Data] = []
+
+            if state.context.earlyDataState.earlyDataAccepted {
+                let eoed = EndOfEarlyData()
+                let eoedMessage = HandshakeCodec.encode(type: .endOfEarlyData, content: eoed.encode())
+                state.context.transcriptHash.update(with: eoedMessage)
+                clientCertMessages.append(eoedMessage)
+            }
+
             // === Client Certificate and CertificateVerify (for mutual TLS) ===
             // RFC 8446 Section 4.4: If server sent CertificateRequest, client responds
             // with Certificate and CertificateVerify BEFORE Finished.
-            var clientCertMessages: [Data] = []
 
             if state.context.clientCertificateRequested {
                 // Check if client has certificate material configured
@@ -875,6 +911,14 @@ public final class ClientStateMachine: Sendable {
                     let certMessage = certificate.encodeAsHandshake()
                     state.context.transcriptHash.update(with: certMessage)
                     clientCertMessages.append(certMessage)
+
+                    // RFC 8446 Section 4.4.3: Client's CertificateVerify scheme must be
+                    // one of the algorithms the server offered in CertificateRequest.
+                    if let allowedAlgs = state.context.peerSignatureAlgorithms {
+                        guard allowedAlgs.contains(signingKey.scheme) else {
+                            throw TLSHandshakeError.signatureVerificationFailed
+                        }
+                    }
 
                     // Send CertificateVerify
                     // Sign transcript up to (not including) CertificateVerify
@@ -923,7 +967,11 @@ public final class ClientStateMachine: Sendable {
 
             // Combine all client messages: [Certificate, CertificateVerify], Finished
             let allClientMessages = clientCertMessages + [clientFinishedMessage]
-            let combinedClientMessage = allClientMessages.reduce(Data()) { $0 + $1 }
+            var combinedClientMessage = Data()
+            combinedClientMessage.reserveCapacity(allClientMessages.reduce(0) { $0 + $1.count })
+            for message in allClientMessages {
+                combinedClientMessage.append(message)
+            }
 
             // Update transcript with client Finished
             state.context.transcriptHash.update(with: clientFinishedMessage)
@@ -937,6 +985,9 @@ public final class ClientStateMachine: Sendable {
 
             // Transition state
             state.handshakeState = .connected
+
+            // Clear handshake-phase secrets no longer needed
+            state.context.zeroizeSecrets()
 
             var outputs: [TLSOutput] = []
 
@@ -1000,7 +1051,7 @@ public final class ClientStateMachine: Sendable {
             // Create session ticket data
             let ticketData = SessionTicketData(
                 ticket: ticket.ticket,
-                resumptionPSK: resumptionPSK.withUnsafeBytes { Data($0) },
+                resumptionPSK: resumptionPSK,
                 maxEarlyDataSize: maxEarlyDataSize,
                 ticketAgeAdd: ticket.ticketAgeAdd,
                 receiveTime: Date(),

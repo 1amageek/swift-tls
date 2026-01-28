@@ -30,6 +30,13 @@ public enum TLSRecordOutput: Sendable {
 /// - Fragmenting outgoing data into TLS records
 /// - Reassembling incoming TLS records from a TCP byte stream
 /// - AEAD encryption/decryption after handshake keys are available
+///
+/// ## Architecture Note
+///
+/// This is a standalone record layer for use-cases that manage their own
+/// handshake flow (e.g., QUIC). For the higher-level API that combines
+/// record processing with ``TLS13Handler`` and manages the full TLS
+/// connection lifecycle, see ``TLSConnection``.
 public final class TLSRecordLayer: Sendable {
 
     private let state: Mutex<RecordLayerState>
@@ -183,14 +190,21 @@ public final class TLSRecordLayer: Sendable {
 
     /// Write encrypted record(s), fragmenting if necessary
     private func writeRecord(content: Data, type: TLSContentType) throws -> Data {
+        // Pre-allocate result capacity
+        let fragmentCount = (content.count + TLSRecordCodec.maxPlaintextSize - 1) / max(TLSRecordCodec.maxPlaintextSize, 1)
+        let overhead = TLSRecordCodec.headerSize + 1 + 16 // header + content type + AEAD tag
         var result = Data()
-        var offset = 0
+        result.reserveCapacity(content.count + fragmentCount * overhead)
 
+        var offset = 0
         while offset < content.count {
             let fragmentSize = min(TLSRecordCodec.maxPlaintextSize, content.count - offset)
-            let fragment = content[content.index(content.startIndex, offsetBy: offset)..<content.index(content.startIndex, offsetBy: offset + fragmentSize)]
+            let start = content.index(content.startIndex, offsetBy: offset)
+            let end = content.index(start, offsetBy: fragmentSize)
+            // Data(fragment) creates a contiguous copy required by AEAD encryption
+            let fragment = Data(content[start..<end])
 
-            let ciphertext = try cryptor.encrypt(content: Data(fragment), type: type)
+            let ciphertext = try cryptor.encrypt(content: fragment, type: type)
             result.append(TLSRecordCodec.encodeCiphertext(ciphertext))
 
             offset += fragmentSize
@@ -209,19 +223,20 @@ public final class TLSRecordLayer: Sendable {
             return [.changeCipherSpec]
 
         case .alert:
-            let alertData: Data
+            // RFC 8446 Section 5: After encryption is active, alerts MUST arrive
+            // inside encrypted applicationData records (inner content type .alert).
             if isEncrypted {
-                // Should not happen - encrypted alerts come as applicationData records
-                let (decrypted, _) = try cryptor.decrypt(ciphertext: record.fragment)
-                alertData = decrypted
-            } else {
-                alertData = record.fragment
+                throw TLSRecordError.unexpectedPlaintextAlert
             }
-            let alert = try TLSAlert.decode(from: alertData)
+            let alert = try TLSAlert.decode(from: record.fragment)
             return [.alert(alert)]
 
         case .handshake:
-            // Plaintext handshake (before encryption is active)
+            // RFC 8446 Section 5: After encryption is active, handshake messages
+            // MUST arrive inside encrypted applicationData records.
+            if isEncrypted {
+                throw TLSRecordError.unexpectedPlaintextHandshake
+            }
             return [.handshakeMessage(record.fragment)]
 
         case .applicationData:

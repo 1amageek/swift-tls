@@ -156,4 +156,71 @@ struct EndToEndHandshakeTests {
         #expect(clientExport == serverExport)
         #expect(clientExport.count == length)
     }
+
+    // MARK: - Key Exchange Group and Cipher Suite Variants
+
+    @Test("Handshake with P-384 key exchange")
+    func testHandshakeWithP384KeyExchange() async throws {
+        var clientConfig = TestFixture.clientConfig()
+        clientConfig.supportedGroups = [.secp384r1]
+        var serverConfig = TestFixture.serverConfig()
+        serverConfig.supportedGroups = [.secp384r1]
+
+        let result = try await performFullHandshake(
+            clientConfig: clientConfig,
+            serverConfig: serverConfig
+        )
+
+        #expect(result.clientHandler.isHandshakeComplete)
+        #expect(result.serverHandler.isHandshakeComplete)
+    }
+
+    @Test("Handshake with ChaCha20-Poly1305 cipher suite")
+    func testHandshakeWithChaCha20() async throws {
+        var clientConfig = TestFixture.clientConfig()
+        clientConfig.supportedCipherSuites = [.tls_chacha20_poly1305_sha256]
+        var serverConfig = TestFixture.serverConfig()
+        serverConfig.supportedCipherSuites = [.tls_chacha20_poly1305_sha256]
+
+        let result = try await performFullHandshake(
+            clientConfig: clientConfig,
+            serverConfig: serverConfig
+        )
+
+        #expect(result.clientHandler.isHandshakeComplete)
+        #expect(result.serverHandler.isHandshakeComplete)
+    }
+
+    @Test("Handshake with AES-256-GCM cipher suite")
+    func testHandshakeWithAES256() async throws {
+        var clientConfig = TestFixture.clientConfig()
+        clientConfig.supportedCipherSuites = [.tls_aes_256_gcm_sha384]
+        var serverConfig = TestFixture.serverConfig()
+        serverConfig.supportedCipherSuites = [.tls_aes_256_gcm_sha384]
+
+        let result = try await performFullHandshake(
+            clientConfig: clientConfig,
+            serverConfig: serverConfig
+        )
+
+        #expect(result.clientHandler.isHandshakeComplete)
+        #expect(result.serverHandler.isHandshakeComplete)
+    }
+
+    @Test("Handshake configuration validation")
+    func testHandshakeConfigurationValidation() throws {
+        // Empty cipher suite list should throw
+        var emptyCSConfig = TestFixture.clientConfig()
+        emptyCSConfig.supportedCipherSuites = []
+        #expect(throws: TLSConfigurationError.self) {
+            try emptyCSConfig.validate()
+        }
+
+        // Empty groups list should throw
+        var emptyGroupsConfig = TestFixture.clientConfig()
+        emptyGroupsConfig.supportedGroups = []
+        #expect(throws: TLSConfigurationError.self) {
+            try emptyGroupsConfig.validate()
+        }
+    }
 }

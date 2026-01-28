@@ -118,7 +118,7 @@ public final class ClientSessionCache: Sendable {
 
             return SessionTicketData(
                 ticket: ticket.ticket,
-                resumptionPSK: psk.withUnsafeBytes { Data($0) },
+                resumptionPSK: psk,
                 maxEarlyDataSize: maxEarlyDataSize,
                 ticketAgeAdd: ticket.ticketAgeAdd,
                 receiveTime: createdAt,
