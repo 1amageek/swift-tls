@@ -10,6 +10,8 @@ let package = Package(
     products: [
         .library(name: "TLSCore", targets: ["TLSCore"]),
         .library(name: "TLSRecord", targets: ["TLSRecord"]),
+        .library(name: "DTLSCore", targets: ["DTLSCore"]),
+        .library(name: "DTLSRecord", targets: ["DTLSRecord"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
@@ -34,6 +36,23 @@ let package = Package(
             ],
             path: "Sources/TLSRecord"
         ),
+        .target(
+            name: "DTLSCore",
+            dependencies: [
+                "TLSCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "X509", package: "swift-certificates"),
+            ],
+            path: "Sources/DTLSCore"
+        ),
+        .target(
+            name: "DTLSRecord",
+            dependencies: [
+                "DTLSCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Sources/DTLSRecord"
+        ),
         .testTarget(
             name: "TLSCoreTests",
             dependencies: ["TLSCore", "TLSRecord"],
@@ -43,6 +62,16 @@ let package = Package(
             name: "TLSRecordTests",
             dependencies: ["TLSRecord", "TLSCore"],
             path: "Tests/TLSRecordTests"
+        ),
+        .testTarget(
+            name: "DTLSCoreTests",
+            dependencies: ["DTLSCore", "TLSCore"],
+            path: "Tests/DTLSCoreTests"
+        ),
+        .testTarget(
+            name: "DTLSRecordTests",
+            dependencies: ["DTLSRecord", "DTLSCore"],
+            path: "Tests/DTLSRecordTests"
         ),
     ]
 )

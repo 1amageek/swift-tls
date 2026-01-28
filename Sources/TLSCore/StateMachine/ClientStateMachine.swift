@@ -612,10 +612,16 @@ public final class ClientStateMachine: Sendable {
                 $0.extensionType == .earlyData
             }
 
+            var outputs: [TLSOutput] = []
+
             if state.context.earlyDataState.attemptingEarlyData {
                 state.context.earlyDataState.earlyDataAccepted = earlyDataAccepted
-                // If early data was not accepted, client must discard any sent 0-RTT data
-                // and retransmit in 1-RTT (handled at transport layer)
+                if !earlyDataAccepted {
+                    // 0-RTT was rejected by server. Signal TLSConnection to discard
+                    // the earlyDataCryptor. Client must discard any sent 0-RTT data
+                    // and retransmit in 1-RTT (handled at transport layer).
+                    outputs.append(.earlyDataEnd)
+                }
             }
 
             // Update transcript
@@ -630,7 +636,7 @@ public final class ClientStateMachine: Sendable {
                 state.handshakeState = .waitCertificateOrCertificateRequest
             }
 
-            return []
+            return outputs
         }
     }
 
@@ -834,8 +840,10 @@ public final class ClientStateMachine: Sendable {
 
     /// Process a server Finished message
     /// - Parameter data: The Finished message content
-    /// - Returns: TLS outputs including application keys and client Finished
-    public func processServerFinished(_ data: Data) throws -> (outputs: [TLSOutput], clientFinished: Data) {
+    /// - Returns: TLS outputs including EndOfEarlyData (at earlyData level),
+    ///   client handshake flight (at handshake level), application keys,
+    ///   and handshake complete signal — all in correct order.
+    public func processServerFinished(_ data: Data) throws -> [TLSOutput] {
         return try state.withLock { state in
             // Only accept Finished in waitFinished state.
             // PSK mode transitions directly from waitEncryptedExtensions to waitFinished.
@@ -881,21 +889,25 @@ public final class ClientStateMachine: Sendable {
             )
             state.context.exporterMasterSecret = exporterMasterSecret
 
+            // Build outputs in correct order for TLSConnection.encodeOutputs
+            var outputs: [TLSOutput] = []
+
             // === EndOfEarlyData (RFC 8446 Section 4.5) ===
             // If early data was accepted, client MUST send EndOfEarlyData before
             // Certificate/CertificateVerify/Finished to signal the end of 0-RTT data.
-            var clientCertMessages: [Data] = []
-
+            // EndOfEarlyData is encrypted with early data keys (earlyDataCryptor).
             if state.context.earlyDataState.earlyDataAccepted {
                 let eoed = EndOfEarlyData()
                 let eoedMessage = HandshakeCodec.encode(type: .endOfEarlyData, content: eoed.encode())
                 state.context.transcriptHash.update(with: eoedMessage)
-                clientCertMessages.append(eoedMessage)
+                outputs.append(.handshakeData(eoedMessage, level: .earlyData))
+                outputs.append(.earlyDataEnd)
             }
 
             // === Client Certificate and CertificateVerify (for mutual TLS) ===
             // RFC 8446 Section 4.4: If server sent CertificateRequest, client responds
             // with Certificate and CertificateVerify BEFORE Finished.
+            var clientCertMessages: [Data] = []
 
             if state.context.clientCertificateRequested {
                 // Check if client has certificate material configured
@@ -965,13 +977,14 @@ public final class ClientStateMachine: Sendable {
             let clientFinished = Finished(verifyData: clientVerifyData)
             let clientFinishedMessage = clientFinished.encodeAsHandshake()
 
-            // Combine all client messages: [Certificate, CertificateVerify], Finished
+            // Combine handshake-level messages: [Certificate, CertificateVerify], Finished
             let allClientMessages = clientCertMessages + [clientFinishedMessage]
             var combinedClientMessage = Data()
             combinedClientMessage.reserveCapacity(allClientMessages.reduce(0) { $0 + $1.count })
             for message in allClientMessages {
                 combinedClientMessage.append(message)
             }
+            outputs.append(.handshakeData(combinedClientMessage, level: .handshake))
 
             // Update transcript with client Finished
             state.context.transcriptHash.update(with: clientFinishedMessage)
@@ -989,8 +1002,6 @@ public final class ClientStateMachine: Sendable {
             // Clear handshake-phase secrets no longer needed
             state.context.zeroizeSecrets()
 
-            var outputs: [TLSOutput] = []
-
             // Application keys
             let cipherSuite = state.context.cipherSuite ?? .tls_aes_128_gcm_sha256
             outputs.append(.keysAvailable(KeysAvailableInfo(
@@ -1007,9 +1018,7 @@ public final class ClientStateMachine: Sendable {
                 resumptionTicket: nil
             )))
 
-            // Return combined message (Certificate + CertificateVerify + Finished for mTLS,
-            // or just Finished for non-mTLS)
-            return (outputs, combinedClientMessage)
+            return outputs
         }
     }
 

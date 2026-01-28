@@ -359,8 +359,9 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
         case .clientHello, .serverHello:
             expectedLevel = .initial
         case .endOfEarlyData:
-            // EndOfEarlyData is encrypted under handshake traffic keys (RFC 8446 Section 4.5)
-            expectedLevel = .handshake
+            // RFC 8446 Section 2.3: EndOfEarlyData is encrypted under
+            // client_early_traffic_secret (0-RTT keys), shown as (EndOfEarlyData)
+            expectedLevel = .earlyData
         case .encryptedExtensions, .certificateRequest, .certificate, .certificateVerify, .finished:
             expectedLevel = .handshake
         case .keyUpdate, .newSessionTicket:
@@ -431,14 +432,10 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
             outputs = try clientMachine.processCertificateVerify(content)
 
         case .finished:
-            let (finishedOutputs, clientFinished) = try clientMachine.processServerFinished(content)
-            outputs = finishedOutputs
-
-            // Insert client Finished data
-            outputs.insert(.handshakeData(clientFinished, level: .handshake), at: 0)
+            outputs = try clientMachine.processServerFinished(content)
 
             // Extract application secrets from outputs for key update support
-            for output in finishedOutputs {
+            for output in outputs {
                 if case .keysAvailable(let info) = output, info.level == .application {
                     state.clientApplicationSecret = info.clientSecret
                     state.serverApplicationSecret = info.serverSecret
@@ -1190,7 +1187,11 @@ public final class ServerStateMachine: Sendable {
     /// Process EndOfEarlyData message from client (RFC 8446 Section 4.5)
     ///
     /// This message indicates the client has finished sending 0-RTT data.
-    /// It is encrypted under the handshake traffic keys.
+    /// It is encrypted under the client_early_traffic_secret (0-RTT keys).
+    ///
+    /// Returns `.earlyDataEnd` to signal TLSConnection to discard the
+    /// earlyDataCryptor and resume using the main cryptor (handshake keys)
+    /// for subsequent records (client Finished).
     public func processEndOfEarlyData(_ data: Data) throws -> [TLSOutput] {
         return try state.withLock { state in
             // EndOfEarlyData is only valid if we accepted early data
@@ -1210,9 +1211,9 @@ public final class ServerStateMachine: Sendable {
             // Mark early data as no longer active
             state.context.earlyDataState.attemptingEarlyData = false
 
-            // State remains as is — server continues waiting for client
-            // Certificate (if mTLS) or Finished
-            return []
+            // Signal TLSConnection to discard the earlyDataCryptor.
+            // After this, server decrypts with handshake receive keys (main cryptor).
+            return [.earlyDataEnd]
         }
     }
 

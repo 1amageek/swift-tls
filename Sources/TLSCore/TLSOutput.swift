@@ -29,6 +29,17 @@ public enum TLSOutput: Sendable {
     /// This is sent post-handshake by servers to enable session resumption.
     /// Clients should store this ticket for future connections.
     case newSessionTicket(NewSessionTicketInfo)
+
+    /// The 0-RTT early data phase has ended.
+    ///
+    /// Emitted when:
+    /// - Server processes EndOfEarlyData from client (RFC 8446 Section 4.5)
+    /// - Client learns 0-RTT was rejected (EncryptedExtensions without early_data)
+    /// - Client sends EndOfEarlyData before Finished
+    ///
+    /// Signals TLSConnection to discard the separate early data cryptor
+    /// and resume using the main (handshake) cryptor for subsequent records.
+    case earlyDataEnd
 }
 
 // MARK: - NewSessionTicket Info

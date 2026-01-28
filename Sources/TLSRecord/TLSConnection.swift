@@ -244,6 +244,16 @@ public final class TLSConnection: Sendable {
         /// but still needs handshake receive keys to decrypt ClientFinished.
         /// These keys are applied when handshakeComplete fires.
         var pendingReceiveKeys: TrafficKeys? = nil
+        /// Separate cryptor for 0-RTT early data (RFC 8446 Section 2.3).
+        ///
+        /// During 0-RTT, early data keys are installed on this cryptor
+        /// instead of overwriting the main cryptor's handshake keys.
+        /// - Client: holds early data send keys (for encrypting EndOfEarlyData)
+        /// - Server: holds early data receive keys (for decrypting 0-RTT records)
+        ///
+        /// Cleared when `.earlyDataEnd` is processed (after EndOfEarlyData
+        /// or when 0-RTT is rejected).
+        var earlyDataCryptor: TLSRecordCryptor? = nil
     }
 
     private struct WriteState: Sendable {
@@ -352,17 +362,30 @@ public final class TLSConnection: Sendable {
     /// In TLS 1.3, encrypted records use contentType .applicationData (0x17).
     /// After decryption, the inner plaintext reveals the actual content type.
     ///
+    /// During the 0-RTT phase (earlyDataCryptor is set), incoming encrypted records
+    /// are decrypted with the earlyDataCryptor. After EndOfEarlyData is processed
+    /// and earlyDataCryptor is cleared, the main cryptor handles decryption.
+    ///
     /// - Parameter record: The decoded TLS record
     /// - Returns: Tuple of (actual content type, payload data)
     private func resolveRecord(_ record: TLSRecord) throws -> (TLSContentType, Data) {
         if record.contentType == .applicationData {
-            let cryptor = sharedState.withLock { $0.cryptor }
-            guard let cryptor else {
+            let (earlyDataCryptor, mainCryptor) = sharedState.withLock {
+                ($0.earlyDataCryptor, $0.cryptor)
+            }
+
+            // During 0-RTT phase, use earlyDataCryptor for all incoming records
+            if let earlyDataCryptor {
+                let (content, innerType) = try earlyDataCryptor.decrypt(ciphertext: record.fragment)
+                return (innerType, content)
+            }
+
+            guard let mainCryptor else {
                 // RFC 8446 Section 5: applicationData records before encryption
                 // is active are a protocol violation.
                 throw TLSRecordError.unexpectedPlaintextApplicationData
             }
-            let (content, innerType) = try cryptor.decrypt(ciphertext: record.fragment)
+            let (content, innerType) = try mainCryptor.decrypt(ciphertext: record.fragment)
             return (innerType, content)
         }
 
@@ -390,13 +413,18 @@ public final class TLSConnection: Sendable {
 
     /// Determine the current encryption level based on handshake state.
     ///
+    /// During the 0-RTT phase (earlyDataCryptor is set), incoming records
+    /// are at `.earlyData` level. After EndOfEarlyData clears earlyDataCryptor,
+    /// the level returns to `.handshake`.
+    ///
     /// After the handshake completes, post-handshake messages (KeyUpdate,
     /// NewSessionTicket) are processed at `.application` level, not `.handshake`.
     private func currentEncryptionLevel() -> TLSEncryptionLevel {
-        let (completed, hasCryptor) = sharedState.withLock {
-            ($0.handshakeCompleted, $0.cryptor != nil)
+        let (completed, hasCryptor, hasEarlyDataCryptor) = sharedState.withLock {
+            ($0.handshakeCompleted, $0.cryptor != nil, $0.earlyDataCryptor != nil)
         }
         if completed { return .application }
+        if hasEarlyDataCryptor { return .earlyData }
         if hasCryptor { return .handshake }
         return .initial
     }
@@ -446,6 +474,20 @@ public final class TLSConnection: Sendable {
                             dataToSend.append(TLSRecordCodec.encodePlaintext(type: .handshake, data: Data(fragment)))
                             offset = end
                         }
+                    } else if level == .earlyData {
+                        // 0-RTT: encrypt with earlyDataCryptor (e.g., client sending EndOfEarlyData)
+                        let earlyDataCryptor = sharedState.withLock { $0.earlyDataCryptor }
+                        if let earlyDataCryptor {
+                            dataToSend.append(try encryptAndFrame(content: data, type: .handshake, cryptor: earlyDataCryptor))
+                        } else {
+                            // earlyDataCryptor should be available; fall back to main cryptor
+                            let cryptor = sharedState.withLock { $0.cryptor }
+                            if let cryptor {
+                                dataToSend.append(try encryptAndFrame(content: data, type: .handshake, cryptor: cryptor))
+                            } else {
+                                pendingEncryptedData.append(data)
+                            }
+                        }
                     } else {
                         let cryptor = sharedState.withLock { $0.cryptor }
                         if let cryptor {
@@ -471,6 +513,10 @@ public final class TLSConnection: Sendable {
                         }
                         pendingEncryptedData.removeAll()
                     }
+
+                case .earlyDataEnd:
+                    // Clear the early data cryptor — subsequent records use the main cryptor
+                    sharedState.withLock { $0.earlyDataCryptor = nil }
 
                 case .handshakeComplete:
                     handshakeComplete = true
@@ -510,7 +556,12 @@ public final class TLSConnection: Sendable {
     /// Update the cryptor with new keys from the handler.
     ///
     /// Key transition timing in TLS 1.3:
-    /// - **Handshake level**: Both send and receive keys are updated immediately.
+    /// - **Early data level**: Keys are installed on a **separate** `earlyDataCryptor`
+    ///   to avoid overwriting handshake keys on the main cryptor.
+    ///   Client gets send-only keys (for 0-RTT data + EndOfEarlyData).
+    ///   Server gets receive-only keys (for decrypting 0-RTT records).
+    /// - **Handshake level**: Both send and receive keys are updated immediately
+    ///   on the main cryptor.
     /// - **Application level on server**: Send keys update immediately (server needs to
     ///   send with application keys after handshake messages). Receive keys are DEFERRED
     ///   because the server emits `keysAvailable(.application)` during `processClientHello`,
@@ -522,6 +573,23 @@ public final class TLSConnection: Sendable {
     private func updateCryptor(with info: KeysAvailableInfo) {
         let receiveSecret = handler.isClient ? info.serverSecret : info.clientSecret
         let sendSecret = handler.isClient ? info.clientSecret : info.serverSecret
+
+        // Early data keys go to a separate cryptor to preserve handshake keys
+        if info.level == .earlyData {
+            sharedState.withLock { state in
+                let earlyDataCryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
+                if let sndSecret = sendSecret {
+                    let sendKeys = TrafficKeys(secret: sndSecret, cipherSuite: info.cipherSuite)
+                    earlyDataCryptor.updateSendKeys(sendKeys)
+                }
+                if let recvSecret = receiveSecret {
+                    let receiveKeys = TrafficKeys(secret: recvSecret, cipherSuite: info.cipherSuite)
+                    earlyDataCryptor.updateReceiveKeys(receiveKeys)
+                }
+                state.earlyDataCryptor = earlyDataCryptor
+            }
+            return
+        }
 
         sharedState.withLock { state in
             // Ensure cryptor exists
