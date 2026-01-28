@@ -134,3 +134,26 @@ public enum DTLSRecordError: Error, Sendable {
     case encryptionFailed(String)
     case decryptionFailed(String)
 }
+
+extension DTLSRecordError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .invalidContentType(let v):
+            return "Invalid content type: \(v)"
+        case .recordOverflow(let s):
+            return "Record overflow: \(s) bytes"
+        case .badRecordMac:
+            return "Bad record MAC"
+        case .insufficientData:
+            return "Insufficient data"
+        case .sequenceNumberOverflow:
+            return "Sequence number overflow"
+        case .invalidEpoch:
+            return "Invalid epoch"
+        case .encryptionFailed(let r):
+            return "Encryption failed: \(r)"
+        case .decryptionFailed(let r):
+            return "Decryption failed: \(r)"
+        }
+    }
+}

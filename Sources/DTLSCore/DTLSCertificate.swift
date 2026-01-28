@@ -120,6 +120,15 @@ public struct CertificateFingerprint: Sendable, Hashable, Equatable {
         return "u" + base64url
     }
 
+    /// Create from an existing SHA-256 digest (e.g., from multihash certhash).
+    ///
+    /// Use this instead of `fromDER(_:)` when you already have the digest bytes
+    /// (e.g., extracted from a multihash). `fromDER` would hash the input again,
+    /// producing a hash-of-hash.
+    public static func fromDigest(_ digest: Data) -> CertificateFingerprint {
+        CertificateFingerprint(algorithm: .sha256, bytes: digest)
+    }
+
     /// SDP fingerprint format: "sha-256 AB:CD:EF:..."
     public var sdpFormat: String {
         let hexParts = bytes.map { String(format: "%02X", $0) }

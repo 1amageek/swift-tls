@@ -5,6 +5,7 @@
 ///   initial = 1 second, max = 60 seconds, factor = 2x
 
 import Foundation
+import Synchronization
 
 /// DTLS flight identifier
 public enum DTLSFlight: Sendable, Equatable {
@@ -25,85 +26,96 @@ public enum DTLSFlight: Sendable, Equatable {
 }
 
 /// Flight retransmission controller
-public actor FlightController {
-    /// Current flight data (messages to retransmit)
-    private var currentFlight: DTLSFlight?
-    private var flightData: [Data] = []
-
-    /// Retransmission state
-    private var retransmissionCount: Int = 0
-    private var currentTimeout: Duration = .seconds(1)
+public final class FlightController: Sendable {
+    private let _state: Mutex<FlightState>
 
     /// Configuration
     private let initialTimeout: Duration = .seconds(1)
     private let maxTimeout: Duration = .seconds(60)
     private let maxRetransmissions: Int = 6
 
-    public init() {}
+    private struct FlightState: Sendable {
+        var currentFlight: DTLSFlight?
+        var flightData: [Data] = []
+        var retransmissionCount: Int = 0
+        var currentTimeout: Duration = .seconds(1)
+    }
+
+    public init() {
+        self._state = Mutex(FlightState())
+    }
 
     /// Start a new flight with the given messages
     /// - Parameters:
     ///   - flight: The flight identifier
     ///   - messages: The encoded messages for this flight
     public func startFlight(_ flight: DTLSFlight, messages: [Data]) {
-        currentFlight = flight
-        flightData = messages
-        retransmissionCount = 0
-        currentTimeout = initialTimeout
+        _state.withLock { s in
+            s.currentFlight = flight
+            s.flightData = messages
+            s.retransmissionCount = 0
+            s.currentTimeout = initialTimeout
+        }
     }
 
     /// Get the current flight's messages for retransmission
     /// - Returns: The flight messages, or nil if no active flight
     public func flightMessages() -> [Data]? {
-        guard currentFlight != nil else { return nil }
-        return flightData
+        _state.withLock { s in
+            guard s.currentFlight != nil else { return nil }
+            return s.flightData
+        }
     }
 
     /// Record that a response was received, canceling retransmission
     public func responseReceived() {
-        currentFlight = nil
-        flightData = []
-        retransmissionCount = 0
-        currentTimeout = initialTimeout
+        _state.withLock { s in
+            s.currentFlight = nil
+            s.flightData = []
+            s.retransmissionCount = 0
+            s.currentTimeout = initialTimeout
+        }
     }
 
     /// Check if retransmission is needed after timeout
     /// - Returns: Messages to retransmit
     /// - Throws: If max retransmissions exceeded
     public func retransmit() throws -> [Data] {
-        guard let _ = currentFlight else {
-            throw DTLSError.invalidState("No active flight to retransmit")
-        }
+        try _state.withLock { s in
+            guard s.currentFlight != nil else {
+                throw DTLSError.invalidState("No active flight to retransmit")
+            }
 
-        retransmissionCount += 1
-        if retransmissionCount > maxRetransmissions {
-            throw DTLSError.maxRetransmissionsExceeded
-        }
+            s.retransmissionCount += 1
+            if s.retransmissionCount > maxRetransmissions {
+                throw DTLSError.maxRetransmissionsExceeded
+            }
 
-        // Exponential backoff
-        let newTimeout = Duration.seconds(
-            min(
-                currentTimeout.components.seconds * 2,
-                maxTimeout.components.seconds
+            // Exponential backoff
+            let newTimeout = Duration.seconds(
+                min(
+                    s.currentTimeout.components.seconds * 2,
+                    maxTimeout.components.seconds
+                )
             )
-        )
-        currentTimeout = newTimeout
+            s.currentTimeout = newTimeout
 
-        return flightData
+            return s.flightData
+        }
     }
 
     /// Get the current timeout duration
     public var timeout: Duration {
-        currentTimeout
+        _state.withLock { $0.currentTimeout }
     }
 
     /// Whether there is an active flight awaiting response
     public var isAwaitingResponse: Bool {
-        currentFlight != nil
+        _state.withLock { $0.currentFlight != nil }
     }
 
     /// The current retransmission count
     public var retransmissions: Int {
-        retransmissionCount
+        _state.withLock { $0.retransmissionCount }
     }
 }

@@ -13,9 +13,14 @@
 
 import Foundation
 import Crypto
+import Synchronization
 import TLSCore
 
+// MARK: - Legacy Result Type
+
 /// Result of processing handshake data
+///
+/// Retained for backward compatibility. New code should use `[DTLSHandshakeAction]`.
 public struct DTLSHandshakeResult: Sendable {
     /// Messages to send to the peer
     public let outputMessages: [Data]
@@ -42,12 +47,18 @@ public struct DTLSHandshakeResult: Sendable {
     }
 }
 
+// MARK: - Client Handshake Handler
+
 /// DTLS 1.2 handshake handler for the client side
-public struct DTLSClientHandshakeHandler: Sendable {
-    private var state: DTLSClientState = .idle
-    private var context: DTLSClientContext = DTLSClientContext()
+public final class DTLSClientHandshakeHandler: Sendable {
+    private let handlerState: Mutex<HandlerState>
     private let certificate: DTLSCertificate
     private let supportedCipherSuites: [DTLSCipherSuite]
+
+    private struct HandlerState: Sendable {
+        var state: DTLSClientState = .idle
+        var context: DTLSClientContext = DTLSClientContext()
+    }
 
     public init(
         certificate: DTLSCertificate,
@@ -55,81 +66,121 @@ public struct DTLSClientHandshakeHandler: Sendable {
     ) {
         self.certificate = certificate
         self.supportedCipherSuites = supportedCipherSuites
+        self.handlerState = Mutex(HandlerState())
     }
 
     /// Start the handshake by generating the initial ClientHello
-    public mutating func startHandshake() -> DTLSHandshakeResult {
-        let clientHello = DTLSClientHello(
-            cipherSuites: supportedCipherSuites
-        )
-        context.clientRandom = clientHello.random
+    public func startHandshake() -> [DTLSHandshakeAction] {
+        handlerState.withLock { s in
+            let clientHello = DTLSClientHello(
+                cipherSuites: supportedCipherSuites
+            )
+            s.context.clientRandom = clientHello.random
 
-        let body = clientHello.encode()
-        let msg = DTLSHandshakeHeader.encodeMessage(
-            type: .clientHello,
-            messageSeq: context.nextMessageSeq(),
-            body: body
-        )
-        context.handshakeMessages.append(msg)
+            let body = clientHello.encode()
+            let msg = DTLSHandshakeHeader.encodeMessage(
+                type: .clientHello,
+                messageSeq: s.context.nextMessageSeq(),
+                body: body
+            )
+            s.context.handshakeMessages.append(msg)
 
-        state = .waitingServerHello
-        return DTLSHandshakeResult(outputMessages: [msg])
-    }
-
-    /// Process incoming handshake data
-    public mutating func processMessage(type: DTLSHandshakeType, body: Data) throws -> DTLSHandshakeResult {
-        switch (state, type) {
-        case (.waitingServerHello, .helloVerifyRequest):
-            return try handleHelloVerifyRequest(body)
-
-        case (.waitingServerHello, .serverHello),
-             (.waitingServerHelloWithCookie, .serverHello):
-            try handleServerHello(body)
-            state = .waitingCertificate
-            return DTLSHandshakeResult()
-
-        case (.waitingCertificate, .certificate):
-            try handleCertificate(body)
-            state = .waitingServerKeyExchange
-            return DTLSHandshakeResult()
-
-        case (.waitingServerKeyExchange, .serverKeyExchange):
-            try handleServerKeyExchange(body)
-            state = .waitingServerHelloDone
-            return DTLSHandshakeResult()
-
-        case (.waitingServerHelloDone, .serverHelloDone):
-            return try handleServerHelloDone(body)
-
-        case (.waitingFinished, .finished):
-            return try handleServerFinished(body)
-
-        default:
-            throw DTLSError.unexpectedMessage(expected: expectedType, received: type)
+            s.state = .waitingServerHello
+            return [.sendMessage(msg)]
         }
     }
 
-    /// Process a ChangeCipherSpec (not a handshake message)
-    public mutating func processChangeCipherSpec() throws {
-        guard state == .waitingChangeCipherSpec else {
-            throw DTLSError.invalidState("Unexpected ChangeCipherSpec in state: \(state)")
+    /// Process a received handshake message
+    ///
+    /// Takes the raw handshake message bytes (header + body) to correctly
+    /// record in the transcript hash. This fixes the bug where server messages
+    /// were not being recorded in the client's transcript.
+    ///
+    /// - Parameter rawMessage: Complete handshake message (12-byte DTLS header + body)
+    /// - Returns: Actions for DTLSConnection to execute
+    public func processHandshakeMessage(_ rawMessage: Data) throws -> [DTLSHandshakeAction] {
+        try handlerState.withLock { s in
+            var reader = TLSReader(data: rawMessage)
+            let header = try DTLSHandshakeHeader.decode(reader: &reader)
+            let body = Data(try reader.readBytes(Int(header.fragmentLength)))
+
+            // Record in transcript:
+            // - HelloVerifyRequest: excluded per RFC 6347 Section 4.2.1
+            // - Finished: excluded until after verification (hash must not include itself)
+            if header.messageType != .helloVerifyRequest && header.messageType != .finished {
+                s.context.handshakeMessages.append(rawMessage)
+            }
+
+            switch (s.state, header.messageType) {
+            case (.waitingServerHello, .helloVerifyRequest):
+                return try handleHelloVerifyRequest(body, state: &s)
+
+            case (.waitingServerHello, .serverHello),
+                 (.waitingServerHelloWithCookie, .serverHello):
+                try handleServerHello(body, state: &s)
+                s.state = .waitingCertificate
+                return []
+
+            case (.waitingCertificate, .certificate):
+                try handleCertificate(body, state: &s)
+                s.state = .waitingServerKeyExchange
+                return []
+
+            case (.waitingServerKeyExchange, .serverKeyExchange):
+                try handleServerKeyExchange(body, state: &s)
+                s.state = .waitingServerHelloDone
+                return []
+
+            case (.waitingServerHelloDone, .serverHelloDone):
+                return try handleServerHelloDone(body, state: &s)
+
+            case (.waitingFinished, .finished):
+                return try handleServerFinished(body, rawMessage: rawMessage, state: &s)
+
+            default:
+                throw DTLSError.unexpectedMessage(
+                    expected: expectedType(for: s.state),
+                    received: header.messageType
+                )
+            }
         }
-        state = .waitingFinished
     }
+
+    /// Process a ChangeCipherSpec record (not a handshake message)
+    public func processChangeCipherSpec() throws {
+        try handlerState.withLock { s in
+            guard s.state == .waitingChangeCipherSpec else {
+                throw DTLSError.invalidState("Unexpected ChangeCipherSpec in state: \(s.state)")
+            }
+            s.state = .waitingFinished
+        }
+    }
+
+    // MARK: - Accessors
 
     /// Whether the handshake is complete
     public var isComplete: Bool {
-        state == .connected
+        handlerState.withLock { $0.state == .connected }
     }
 
-    /// The current state
+    /// The current handshake state
     public var currentState: DTLSClientState {
-        state
+        handlerState.withLock { $0.state }
     }
 
-    // MARK: - Private handlers
+    /// The server's DER-encoded certificate (available after Certificate message)
+    public var serverCertificateDER: Data? {
+        handlerState.withLock { $0.context.serverCertificateDER }
+    }
 
-    private var expectedType: DTLSHandshakeType {
+    /// The negotiated cipher suite (available after ServerHello)
+    public var negotiatedCipherSuite: DTLSCipherSuite? {
+        handlerState.withLock { $0.context.cipherSuite }
+    }
+
+    // MARK: - Private Handlers
+
+    private func expectedType(for state: DTLSClientState) -> DTLSHandshakeType {
         switch state {
         case .waitingServerHello, .waitingServerHelloWithCookie: return .serverHello
         case .waitingCertificate: return .certificate
@@ -140,59 +191,71 @@ public struct DTLSClientHandshakeHandler: Sendable {
         }
     }
 
-    private mutating func handleHelloVerifyRequest(_ body: Data) throws -> DTLSHandshakeResult {
+    private func handleHelloVerifyRequest(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
         let hvr = try HelloVerifyRequest.decode(from: body)
-        context.cookie = hvr.cookie
+        s.context.cookie = hvr.cookie
 
-        // Reset message seq and handshake hash for the retry
-        context.messageSeq = 0
-        context.handshakeMessages = Data()
+        // Reset message seq and transcript for the retry
+        s.context.messageSeq = 0
+        s.context.handshakeMessages = Data()
 
         // Resend ClientHello with cookie
         let clientHello = DTLSClientHello(
-            random: context.clientRandom,
+            random: s.context.clientRandom,
             cookie: hvr.cookie,
             cipherSuites: supportedCipherSuites
         )
 
-        let body = clientHello.encode()
+        let chBody = clientHello.encode()
         let msg = DTLSHandshakeHeader.encodeMessage(
             type: .clientHello,
-            messageSeq: context.nextMessageSeq(),
-            body: body
+            messageSeq: s.context.nextMessageSeq(),
+            body: chBody
         )
-        context.handshakeMessages.append(msg)
+        s.context.handshakeMessages.append(msg)
 
-        state = .waitingServerHelloWithCookie
-        return DTLSHandshakeResult(outputMessages: [msg])
+        s.state = .waitingServerHelloWithCookie
+        return [.sendMessage(msg)]
     }
 
-    private mutating func handleServerHello(_ body: Data) throws {
+    private func handleServerHello(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws {
         let serverHello = try DTLSServerHello.decode(from: body)
-        context.serverRandom = serverHello.random
-        context.cipherSuite = serverHello.cipherSuite
-        context.keySchedule = DTLSKeySchedule(cipherSuite: serverHello.cipherSuite)
+        s.context.serverRandom = serverHello.random
+        s.context.cipherSuite = serverHello.cipherSuite
+        s.context.keySchedule = DTLSKeySchedule(cipherSuite: serverHello.cipherSuite)
     }
 
-    private mutating func handleCertificate(_ body: Data) throws {
+    private func handleCertificate(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws {
         let certMsg = try CertificateMessage.decode(from: body)
         guard let firstCert = certMsg.certificates.first else {
             throw DTLSError.invalidCertificate("Empty certificate chain")
         }
-        context.serverCertificateDER = firstCert
+        s.context.serverCertificateDER = firstCert
     }
 
-    private mutating func handleServerKeyExchange(_ body: Data) throws {
+    private func handleServerKeyExchange(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws {
         let ske = try ServerKeyExchange.decode(from: body)
-        context.serverPublicKey = ske.publicKey
-        context.serverNamedGroup = ske.namedGroup
+        s.context.serverPublicKey = ske.publicKey
+        s.context.serverNamedGroup = ske.namedGroup
 
         // Verify server signature using server's certificate
-        if let certDER = context.serverCertificateDER {
+        if let certDER = s.context.serverCertificateDER {
             let verifyKey = try VerificationKey(certificateData: certDER)
 
-            guard let clientRandom = context.clientRandom,
-                  let serverRandom = context.serverRandom else {
+            guard let clientRandom = s.context.clientRandom,
+                  let serverRandom = s.context.serverRandom else {
                 throw DTLSError.invalidState("Missing randoms")
             }
 
@@ -207,80 +270,96 @@ public struct DTLSClientHandshakeHandler: Sendable {
         }
     }
 
-    private mutating func handleServerHelloDone(_ body: Data) throws -> DTLSHandshakeResult {
+    private func handleServerHelloDone(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
         _ = try ServerHelloDone.decode(from: body)
 
-        guard let serverPublicKey = context.serverPublicKey,
-              let serverNamedGroup = context.serverNamedGroup,
-              let clientRandom = context.clientRandom,
-              let serverRandom = context.serverRandom else {
+        guard let serverPublicKey = s.context.serverPublicKey,
+              let serverNamedGroup = s.context.serverNamedGroup,
+              let clientRandom = s.context.clientRandom,
+              let serverRandom = s.context.serverRandom else {
             throw DTLSError.invalidState("Missing handshake data")
         }
 
         // Generate ECDHE key pair
         let keyExchange = try KeyExchange.generate(for: serverNamedGroup)
-        context.keyExchange = keyExchange
+        s.context.keyExchange = keyExchange
 
-        // Compute pre-master secret
+        // Compute shared secret and derive master secret
         let sharedSecret = try keyExchange.sharedSecret(with: serverPublicKey)
-
-        // Derive master secret and key block
-        context.keySchedule?.deriveMasterSecret(
+        s.context.keySchedule?.deriveMasterSecret(
             preMasterSecret: sharedSecret.rawRepresentation,
             clientRandom: clientRandom,
             serverRandom: serverRandom
         )
 
-        var messages: [Data] = []
+        // Derive key block early for .keysAvailable
+        guard let keyBlock = try s.context.keySchedule?.deriveKeyBlock() else {
+            throw DTLSError.invalidState("Key schedule not initialized")
+        }
+        guard let cipherSuite = s.context.cipherSuite else {
+            throw DTLSError.invalidState("Cipher suite not negotiated")
+        }
+
+        var actions: [DTLSHandshakeAction] = []
 
         // Certificate message
         let certMsg = CertificateMessage(certificate: certificate)
         let certBody = certMsg.encode()
         let certEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .certificate,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: certBody
         )
-        context.handshakeMessages.append(certEncoded)
-        messages.append(certEncoded)
+        s.context.handshakeMessages.append(certEncoded)
+        actions.append(.sendMessage(certEncoded))
 
         // ClientKeyExchange
         let cke = ClientKeyExchange(publicKey: keyExchange.publicKeyBytes)
         let ckeBody = cke.encode()
         let ckeEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .clientKeyExchange,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: ckeBody
         )
-        context.handshakeMessages.append(ckeEncoded)
-        messages.append(ckeEncoded)
+        s.context.handshakeMessages.append(ckeEncoded)
+        actions.append(.sendMessage(ckeEncoded))
 
         // CertificateVerify
-        let handshakeHash = computeHandshakeHash()
+        let cvHash = Self.computeHandshakeHash(
+            messages: s.context.handshakeMessages,
+            cipherSuite: s.context.cipherSuite
+        )
         let cv = try CertificateVerify.create(
-            handshakeHash: handshakeHash,
+            handshakeHash: cvHash,
             signingKey: certificate.signingKey
         )
         let cvBody = cv.encode()
         let cvEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .certificateVerify,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: cvBody
         )
-        context.handshakeMessages.append(cvEncoded)
-        messages.append(cvEncoded)
+        s.context.handshakeMessages.append(cvEncoded)
+        actions.append(.sendMessage(cvEncoded))
 
-        // ChangeCipherSpec (not a handshake message, not included in hash)
-        let ccs = ChangeCipherSpec()
-        messages.append(ccs.encode())
+        // Key material available (DTLSConnection stores but does not install yet)
+        actions.append(.keysAvailable(keyBlock, cipherSuite))
 
-        // Finished
-        let finishedHash = computeHandshakeHash()
-        let verifyData = try context.keySchedule?.computeVerifyData(
+        // ChangeCipherSpec (DTLSConnection installs write keys here)
+        actions.append(.sendChangeCipherSpec)
+
+        // Finished (will be encrypted since CCS was sent)
+        let finishedHash = Self.computeHandshakeHash(
+            messages: s.context.handshakeMessages,
+            cipherSuite: s.context.cipherSuite
+        )
+        guard let verifyData = try s.context.keySchedule?.computeVerifyData(
             label: DTLSFinished.clientLabel,
             handshakeHash: finishedHash
-        )
-        guard let verifyData else {
+        ) else {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
@@ -288,30 +367,35 @@ public struct DTLSClientHandshakeHandler: Sendable {
         let finBody = finished.encode()
         let finEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: finBody
         )
-        context.handshakeMessages.append(finEncoded)
-        messages.append(finEncoded)
+        s.context.handshakeMessages.append(finEncoded)
+        actions.append(.sendMessage(finEncoded))
 
-        state = .waitingChangeCipherSpec
+        // Expect CCS from server before server Finished
+        actions.append(.expectChangeCipherSpec)
 
-        return DTLSHandshakeResult(
-            outputMessages: messages,
-            cipherSuite: context.cipherSuite
-        )
+        s.state = .waitingChangeCipherSpec
+        return actions
     }
 
-    private mutating func handleServerFinished(_ body: Data) throws -> DTLSHandshakeResult {
+    private func handleServerFinished(
+        _ body: Data,
+        rawMessage: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
         let finished = try DTLSFinished.decode(from: body)
 
-        // Verify server's Finished
-        let handshakeHash = computeHandshakeHash()
-        let expectedVerifyData = try context.keySchedule?.computeVerifyData(
+        // Verify server's Finished (hash computed BEFORE adding to transcript)
+        let handshakeHash = Self.computeHandshakeHash(
+            messages: s.context.handshakeMessages,
+            cipherSuite: s.context.cipherSuite
+        )
+        guard let expectedVerifyData = try s.context.keySchedule?.computeVerifyData(
             label: DTLSFinished.serverLabel,
             handshakeHash: handshakeHash
-        )
-        guard let expectedVerifyData else {
+        ) else {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
@@ -319,27 +403,40 @@ public struct DTLSClientHandshakeHandler: Sendable {
             throw DTLSError.verifyDataMismatch
         }
 
-        state = .connected
+        // Record server Finished in transcript (after successful verification)
+        s.context.handshakeMessages.append(rawMessage)
 
-        let keyBlock = try context.keySchedule?.deriveKeyBlock()
-        return DTLSHandshakeResult(
-            isComplete: true,
-            keyBlock: keyBlock,
-            cipherSuite: context.cipherSuite
-        )
+        s.state = .connected
+        return [.handshakeComplete]
     }
 
-    private func computeHandshakeHash() -> Data {
-        Data(SHA256.hash(data: context.handshakeMessages))
+    // MARK: - Helpers
+
+    private static func computeHandshakeHash(
+        messages: Data,
+        cipherSuite: DTLSCipherSuite?
+    ) -> Data {
+        switch cipherSuite?.hashAlgorithm {
+        case .sha384:
+            return Data(SHA384.hash(data: messages))
+        default:
+            return Data(SHA256.hash(data: messages))
+        }
     }
 }
 
+// MARK: - Server Handshake Handler
+
 /// DTLS 1.2 handshake handler for the server side
-public struct DTLSServerHandshakeHandler: Sendable {
-    private var state: DTLSServerState = .idle
-    private var context: DTLSServerContext = DTLSServerContext()
+public final class DTLSServerHandshakeHandler: Sendable {
+    private let handlerState: Mutex<HandlerState>
     private let certificate: DTLSCertificate
     private let supportedCipherSuites: [DTLSCipherSuite]
+
+    private struct HandlerState: Sendable {
+        var state: DTLSServerState = .idle
+        var context: DTLSServerContext = DTLSServerContext()
+    }
 
     public init(
         certificate: DTLSCertificate,
@@ -347,105 +444,201 @@ public struct DTLSServerHandshakeHandler: Sendable {
     ) {
         self.certificate = certificate
         self.supportedCipherSuites = supportedCipherSuites
+        self.handlerState = Mutex(HandlerState())
     }
 
-    /// Process initial ClientHello (may return HelloVerifyRequest)
-    public mutating func processClientHello(
-        _ clientHello: DTLSClientHello,
+    /// Process a ClientHello message
+    ///
+    /// Handles both the initial ClientHello (returns HelloVerifyRequest) and
+    /// the retried ClientHello with cookie (returns server flight).
+    ///
+    /// - Parameters:
+    ///   - rawMessage: Complete handshake message (12-byte DTLS header + body)
+    ///   - clientAddress: Client's transport address for cookie computation
+    /// - Returns: Actions for DTLSConnection to execute
+    public func processClientHello(
+        _ rawMessage: Data,
         clientAddress: Data
-    ) throws -> DTLSHandshakeResult {
-        // If no cookie, send HelloVerifyRequest
-        if clientHello.cookie.isEmpty {
-            let secret = generateCookieSecret()
-            context.cookieSecret = secret
+    ) throws -> [DTLSHandshakeAction] {
+        try handlerState.withLock { s in
+            // Parse ClientHello from raw message
+            var reader = TLSReader(data: rawMessage)
+            let header = try DTLSHandshakeHeader.decode(reader: &reader)
+            let body = Data(try reader.readBytes(Int(header.fragmentLength)))
+            let clientHello = try DTLSClientHello.decode(from: body)
 
-            let hvr = HelloVerifyRequest.generate(
-                clientAddress: clientAddress,
-                secret: SymmetricKey(data: secret)
-            )
-            let body = hvr.encode()
-            let msg = DTLSHandshakeHeader.encodeMessage(
-                type: .helloVerifyRequest,
-                messageSeq: context.nextMessageSeq(),
-                body: body
-            )
+            guard header.messageType == .clientHello else {
+                throw DTLSError.unexpectedMessage(expected: .clientHello, received: header.messageType)
+            }
 
-            state = .waitingClientHelloWithCookie
-            return DTLSHandshakeResult(outputMessages: [msg])
+            // If no cookie, send HelloVerifyRequest
+            if clientHello.cookie.isEmpty {
+                let secret = Self.generateCookieSecret()
+                s.context.cookieSecret = secret
+
+                let hvr = HelloVerifyRequest.generate(
+                    clientAddress: clientAddress,
+                    secret: SymmetricKey(data: secret)
+                )
+                let hvrBody = hvr.encode()
+                let msg = DTLSHandshakeHeader.encodeMessage(
+                    type: .helloVerifyRequest,
+                    messageSeq: s.context.nextMessageSeq(),
+                    body: hvrBody
+                )
+
+                s.state = .waitingClientHelloWithCookie
+                return [.sendMessage(msg)]
+            }
+
+            // Verify cookie
+            if let cookieSecret = s.context.cookieSecret {
+                let valid = HelloVerifyRequest.verifyCookie(
+                    clientHello.cookie,
+                    clientAddress: clientAddress,
+                    secret: SymmetricKey(data: cookieSecret)
+                )
+                guard valid else {
+                    throw DTLSError.cookieMismatch
+                }
+            }
+
+            return try processVerifiedClientHello(
+                clientHello,
+                rawMessage: rawMessage,
+                state: &s
+            )
         }
+    }
 
-        // Verify cookie
-        if let cookieSecret = context.cookieSecret {
-            let valid = HelloVerifyRequest.verifyCookie(
-                clientHello.cookie,
-                clientAddress: clientAddress,
-                secret: SymmetricKey(data: cookieSecret)
-            )
-            guard valid else {
-                throw DTLSError.cookieMismatch
+    /// Process a received handshake message (not ClientHello)
+    ///
+    /// Takes the raw handshake message bytes (header + body) to correctly
+    /// record in the transcript hash.
+    ///
+    /// - Parameter rawMessage: Complete handshake message (12-byte DTLS header + body)
+    /// - Returns: Actions for DTLSConnection to execute
+    public func processHandshakeMessage(_ rawMessage: Data) throws -> [DTLSHandshakeAction] {
+        try handlerState.withLock { s in
+            var reader = TLSReader(data: rawMessage)
+            let header = try DTLSHandshakeHeader.decode(reader: &reader)
+            let body = Data(try reader.readBytes(Int(header.fragmentLength)))
+
+            // Record in transcript (except Finished — verified before recording)
+            if header.messageType != .finished {
+                s.context.handshakeMessages.append(rawMessage)
+            }
+
+            switch (s.state, header.messageType) {
+            case (.waitingClientKeyExchange, .certificate):
+                let certMsg = try CertificateMessage.decode(from: body)
+                s.context.clientCertificateDER = certMsg.certificates.first
+                return []
+
+            case (.waitingClientKeyExchange, .clientKeyExchange):
+                return try handleClientKeyExchange(body, state: &s)
+
+            case (.waitingClientKeyExchange, .certificateVerify),
+                 (.waitingChangeCipherSpec, .certificateVerify):
+                // CertificateVerify already recorded in transcript above
+                return []
+
+            case (.waitingFinished, .finished):
+                return try handleClientFinished(body, rawMessage: rawMessage, state: &s)
+
+            default:
+                throw DTLSError.unexpectedMessage(
+                    expected: .clientKeyExchange,
+                    received: header.messageType
+                )
             }
         }
-
-        return try processVerifiedClientHello(clientHello)
     }
 
-    /// Process a verified ClientHello and generate server flight
-    private mutating func processVerifiedClientHello(
-        _ clientHello: DTLSClientHello
-    ) throws -> DTLSHandshakeResult {
-        context.clientRandom = clientHello.random
+    /// Process a ChangeCipherSpec record
+    public func processChangeCipherSpec() throws {
+        try handlerState.withLock { s in
+            guard s.state == .waitingChangeCipherSpec else {
+                throw DTLSError.invalidState("Unexpected ChangeCipherSpec in state: \(s.state)")
+            }
+            s.state = .waitingFinished
+        }
+    }
+
+    // MARK: - Accessors
+
+    /// Whether the handshake is complete
+    public var isComplete: Bool {
+        handlerState.withLock { $0.state == .connected }
+    }
+
+    /// The current handshake state
+    public var currentState: DTLSServerState {
+        handlerState.withLock { $0.state }
+    }
+
+    /// The client's DER-encoded certificate (if mutual auth)
+    public var clientCertificateDER: Data? {
+        handlerState.withLock { $0.context.clientCertificateDER }
+    }
+
+    /// The negotiated cipher suite
+    public var negotiatedCipherSuite: DTLSCipherSuite? {
+        handlerState.withLock { $0.context.cipherSuite }
+    }
+
+    // MARK: - Private Handlers
+
+    private func processVerifiedClientHello(
+        _ clientHello: DTLSClientHello,
+        rawMessage: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
+        s.context.clientRandom = clientHello.random
 
         // Select cipher suite
         guard let selectedSuite = selectCipherSuite(from: clientHello.cipherSuites) else {
             throw DTLSError.noCipherSuiteMatch
         }
-        context.cipherSuite = selectedSuite
-        context.keySchedule = DTLSKeySchedule(cipherSuite: selectedSuite)
+        s.context.cipherSuite = selectedSuite
+        s.context.keySchedule = DTLSKeySchedule(cipherSuite: selectedSuite)
 
-        // Reset handshake messages
-        context.handshakeMessages = Data()
+        // Reset transcript and record ClientHello (using actual raw bytes from peer)
+        s.context.handshakeMessages = Data()
+        s.context.handshakeMessages.append(rawMessage)
 
-        // Add ClientHello to transcript
-        let chBody = clientHello.encode()
-        let chEncoded = DTLSHandshakeHeader.encodeMessage(
-            type: .clientHello,
-            messageSeq: 0,
-            body: chBody
-        )
-        context.handshakeMessages.append(chEncoded)
-
-        var messages: [Data] = []
+        var actions: [DTLSHandshakeAction] = []
 
         // ServerHello
         let serverHello = DTLSServerHello(cipherSuite: selectedSuite)
-        context.serverRandom = serverHello.random
+        s.context.serverRandom = serverHello.random
         let shBody = serverHello.encode()
         let shEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .serverHello,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: shBody
         )
-        context.handshakeMessages.append(shEncoded)
-        messages.append(shEncoded)
+        s.context.handshakeMessages.append(shEncoded)
+        actions.append(.sendMessage(shEncoded))
 
         // Certificate
         let certMsg = CertificateMessage(certificate: certificate)
         let certBody = certMsg.encode()
         let certEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .certificate,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: certBody
         )
-        context.handshakeMessages.append(certEncoded)
-        messages.append(certEncoded)
+        s.context.handshakeMessages.append(certEncoded)
+        actions.append(.sendMessage(certEncoded))
 
         // ServerKeyExchange
         let namedGroup: TLSCore.NamedGroup = .secp256r1
         let keyExchange = try KeyExchange.generate(for: namedGroup)
-        context.keyExchange = keyExchange
+        s.context.keyExchange = keyExchange
 
-        guard let clientRandom = context.clientRandom,
-              let serverRandom = context.serverRandom else {
+        guard let clientRandom = s.context.clientRandom,
+              let serverRandom = s.context.serverRandom else {
             throw DTLSError.invalidState("Missing randoms")
         }
 
@@ -458,128 +651,84 @@ public struct DTLSServerHandshakeHandler: Sendable {
         let skeBody = ske.encode()
         let skeEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .serverKeyExchange,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: skeBody
         )
-        context.handshakeMessages.append(skeEncoded)
-        messages.append(skeEncoded)
+        s.context.handshakeMessages.append(skeEncoded)
+        actions.append(.sendMessage(skeEncoded))
 
         // ServerHelloDone
         let shd = ServerHelloDone()
         let shdBody = shd.encode()
         let shdEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .serverHelloDone,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: shdBody
         )
-        context.handshakeMessages.append(shdEncoded)
-        messages.append(shdEncoded)
+        s.context.handshakeMessages.append(shdEncoded)
+        actions.append(.sendMessage(shdEncoded))
 
-        state = .waitingClientKeyExchange
-        return DTLSHandshakeResult(outputMessages: messages)
+        s.state = .waitingClientKeyExchange
+        return actions
     }
 
-    /// Process incoming handshake message
-    public mutating func processMessage(type: DTLSHandshakeType, body: Data) throws -> DTLSHandshakeResult {
-        switch (state, type) {
-        case (.waitingClientHelloWithCookie, .clientHello):
-            let clientHello = try DTLSClientHello.decode(from: body)
-            return try processVerifiedClientHello(clientHello)
-
-        case (.waitingClientKeyExchange, .certificate):
-            let certMsg = try CertificateMessage.decode(from: body)
-            context.clientCertificateDER = certMsg.certificates.first
-            // Record in transcript
-            let encoded = DTLSHandshakeHeader.encodeMessage(
-                type: .certificate, messageSeq: 0, body: body
-            )
-            context.handshakeMessages.append(encoded)
-            return DTLSHandshakeResult()
-
-        case (.waitingClientKeyExchange, .clientKeyExchange):
-            return try handleClientKeyExchange(body)
-
-        case (.waitingClientKeyExchange, .certificateVerify):
-            // Record in transcript
-            let encoded = DTLSHandshakeHeader.encodeMessage(
-                type: .certificateVerify, messageSeq: 0, body: body
-            )
-            context.handshakeMessages.append(encoded)
-            return DTLSHandshakeResult()
-
-        case (.waitingFinished, .finished):
-            return try handleClientFinished(body)
-
-        default:
-            throw DTLSError.unexpectedMessage(
-                expected: .clientKeyExchange,
-                received: type
-            )
-        }
-    }
-
-    /// Process a ChangeCipherSpec
-    public mutating func processChangeCipherSpec() throws {
-        guard state == .waitingChangeCipherSpec || state == .waitingClientKeyExchange else {
-            throw DTLSError.invalidState("Unexpected ChangeCipherSpec in state: \(state)")
-        }
-        state = .waitingFinished
-    }
-
-    /// Whether the handshake is complete
-    public var isComplete: Bool {
-        state == .connected
-    }
-
-    /// The current state
-    public var currentState: DTLSServerState {
-        state
-    }
-
-    // MARK: - Private handlers
-
-    private mutating func handleClientKeyExchange(_ body: Data) throws -> DTLSHandshakeResult {
+    private func handleClientKeyExchange(
+        _ body: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
         let cke = try ClientKeyExchange.decode(from: body)
-        context.clientPublicKey = cke.publicKey
+        s.context.clientPublicKey = cke.publicKey
 
-        // Record in transcript
-        let encoded = DTLSHandshakeHeader.encodeMessage(
-            type: .clientKeyExchange, messageSeq: 0, body: body
-        )
-        context.handshakeMessages.append(encoded)
-
-        // Compute pre-master secret
-        guard let keyExchange = context.keyExchange else {
+        // Compute shared secret
+        guard let keyExchange = s.context.keyExchange else {
             throw DTLSError.invalidState("No key exchange")
         }
         let sharedSecret = try keyExchange.sharedSecret(with: cke.publicKey)
 
-        guard let clientRandom = context.clientRandom,
-              let serverRandom = context.serverRandom else {
+        guard let clientRandom = s.context.clientRandom,
+              let serverRandom = s.context.serverRandom else {
             throw DTLSError.invalidState("Missing randoms")
         }
 
         // Derive master secret
-        context.keySchedule?.deriveMasterSecret(
+        s.context.keySchedule?.deriveMasterSecret(
             preMasterSecret: sharedSecret.rawRepresentation,
             clientRandom: clientRandom,
             serverRandom: serverRandom
         )
 
-        state = .waitingChangeCipherSpec
-        return DTLSHandshakeResult()
+        // Derive key block early
+        guard let keyBlock = try s.context.keySchedule?.deriveKeyBlock() else {
+            throw DTLSError.invalidState("Key schedule not initialized")
+        }
+        guard let cipherSuite = s.context.cipherSuite else {
+            throw DTLSError.invalidState("Cipher suite not negotiated")
+        }
+
+        s.state = .waitingChangeCipherSpec
+
+        return [
+            .keysAvailable(keyBlock, cipherSuite),
+            .expectChangeCipherSpec
+        ]
     }
 
-    private mutating func handleClientFinished(_ body: Data) throws -> DTLSHandshakeResult {
+    private func handleClientFinished(
+        _ body: Data,
+        rawMessage: Data,
+        state s: inout HandlerState
+    ) throws -> [DTLSHandshakeAction] {
         let finished = try DTLSFinished.decode(from: body)
 
-        // Verify client's Finished
-        let handshakeHash = computeHandshakeHash()
-        let expectedVerifyData = try context.keySchedule?.computeVerifyData(
+        // Verify client's Finished (hash computed BEFORE adding to transcript)
+        let handshakeHash = Self.computeHandshakeHash(
+            messages: s.context.handshakeMessages,
+            cipherSuite: s.context.cipherSuite
+        )
+        guard let expectedVerifyData = try s.context.keySchedule?.computeVerifyData(
             label: DTLSFinished.clientLabel,
             handshakeHash: handshakeHash
-        )
-        guard let expectedVerifyData else {
+        ) else {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
@@ -587,25 +736,23 @@ public struct DTLSServerHandshakeHandler: Sendable {
             throw DTLSError.verifyDataMismatch
         }
 
-        // Add client Finished to transcript
-        let finEncoded = DTLSHandshakeHeader.encodeMessage(
-            type: .finished, messageSeq: 0, body: body
+        // Record client Finished in transcript (after successful verification)
+        s.context.handshakeMessages.append(rawMessage)
+
+        var actions: [DTLSHandshakeAction] = []
+
+        // Server ChangeCipherSpec (DTLSConnection installs write keys)
+        actions.append(.sendChangeCipherSpec)
+
+        // Server Finished (will be encrypted since CCS was sent)
+        let serverHash = Self.computeHandshakeHash(
+            messages: s.context.handshakeMessages,
+            cipherSuite: s.context.cipherSuite
         )
-        context.handshakeMessages.append(finEncoded)
-
-        var messages: [Data] = []
-
-        // Server CCS
-        let ccs = ChangeCipherSpec()
-        messages.append(ccs.encode())
-
-        // Server Finished
-        let serverHash = computeHandshakeHash()
-        let verifyData = try context.keySchedule?.computeVerifyData(
+        guard let verifyData = try s.context.keySchedule?.computeVerifyData(
             label: DTLSFinished.serverLabel,
             handshakeHash: serverHash
-        )
-        guard let verifyData else {
+        ) else {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
@@ -613,21 +760,18 @@ public struct DTLSServerHandshakeHandler: Sendable {
         let sfBody = serverFinished.encode()
         let sfEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: context.nextMessageSeq(),
+            messageSeq: s.context.nextMessageSeq(),
             body: sfBody
         )
-        messages.append(sfEncoded)
+        actions.append(.sendMessage(sfEncoded))
 
-        state = .connected
+        actions.append(.handshakeComplete)
 
-        let keyBlock = try context.keySchedule?.deriveKeyBlock()
-        return DTLSHandshakeResult(
-            outputMessages: messages,
-            isComplete: true,
-            keyBlock: keyBlock,
-            cipherSuite: context.cipherSuite
-        )
+        s.state = .connected
+        return actions
     }
+
+    // MARK: - Helpers
 
     private func selectCipherSuite(from offered: [DTLSCipherSuite]) -> DTLSCipherSuite? {
         for suite in supportedCipherSuites {
@@ -638,7 +782,7 @@ public struct DTLSServerHandshakeHandler: Sendable {
         return nil
     }
 
-    private func generateCookieSecret() -> Data {
+    private static func generateCookieSecret() -> Data {
         var bytes = Data(count: 32)
         bytes.withUnsafeMutableBytes { ptr in
             let _ = SecRandomCopyBytes(kSecRandomDefault, 32, ptr.baseAddress!)
@@ -646,8 +790,15 @@ public struct DTLSServerHandshakeHandler: Sendable {
         return bytes
     }
 
-    private func computeHandshakeHash() -> Data {
-        Data(SHA256.hash(data: context.handshakeMessages))
+    private static func computeHandshakeHash(
+        messages: Data,
+        cipherSuite: DTLSCipherSuite?
+    ) -> Data {
+        switch cipherSuite?.hashAlgorithm {
+        case .sha384:
+            return Data(SHA384.hash(data: messages))
+        default:
+            return Data(SHA256.hash(data: messages))
+        }
     }
 }
-
