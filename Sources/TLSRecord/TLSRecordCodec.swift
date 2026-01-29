@@ -153,4 +153,6 @@ public enum TLSRecordError: Error, Sendable {
     case unexpectedPlaintextAlert
     /// Receive buffer exceeded maximum size
     case bufferOverflow
+    /// Invalid key parameters (wrong size IV, etc.)
+    case invalidKey(String)
 }

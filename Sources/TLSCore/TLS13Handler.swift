@@ -913,6 +913,9 @@ public final class ServerStateMachine: Sendable {
                         ) {
                             state.context.clientEarlyTrafficSecret = earlyTrafficSecret
                             state.context.earlyDataState.clientEarlyTrafficSecret = earlyTrafficSecret
+                        } else {
+                            // Early traffic secret derivation failed - explicitly reject early data
+                            state.context.earlyDataState.earlyDataAccepted = false
                         }
                     }
                     // If replay detected, early data is rejected but handshake continues with 1-RTT
@@ -962,7 +965,7 @@ public final class ServerStateMachine: Sendable {
             }
 
             // Generate ServerHello
-            let serverHello = ServerHello(
+            let serverHello = try ServerHello(
                 legacySessionIDEcho: clientHello.legacySessionID,
                 cipherSuite: state.context.cipherSuite ?? .tls_aes_128_gcm_sha256,
                 extensions: serverHelloExtensions
@@ -1163,7 +1166,7 @@ public final class ServerStateMachine: Sendable {
 
         // Generate HelloRetryRequest
         // HRR is a ServerHello with special random (SHA-256 of "HelloRetryRequest")
-        let hrr = ServerHello.helloRetryRequest(
+        let hrr = try ServerHello.helloRetryRequest(
             legacySessionIDEcho: clientHello.legacySessionID,
             cipherSuite: negotiatedSuite,
             extensions: [
@@ -1448,10 +1451,8 @@ public final class ServerStateMachine: Sendable {
             }
 
             // Generate random ticket_age_add
-            var ticketAgeAdd: UInt32 = 0
-            withUnsafeMutableBytes(of: &ticketAgeAdd) { ptr in
-                _ = SecRandomCopyBytes(kSecRandomDefault, 4, ptr.baseAddress!)
-            }
+            let ticketAgeAddBytes = try secureRandomBytes(count: 4)
+            let ticketAgeAdd = ticketAgeAddBytes.withUnsafeBytes { $0.load(as: UInt32.self) }
 
             // Create stored session
             let session = SessionTicketStore.StoredSession(
@@ -1464,7 +1465,7 @@ public final class ServerStateMachine: Sendable {
             )
 
             // Generate ticket through store
-            let ticket = store.generateTicket(for: session)
+            let ticket = try store.generateTicket(for: session)
 
             // Encode as handshake message
             let ticketData = ticket.encodeMessage()

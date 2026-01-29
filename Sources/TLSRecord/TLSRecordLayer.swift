@@ -63,9 +63,10 @@ public final class TLSRecordLayer: Sendable {
     /// - Parameters:
     ///   - send: The send (write) traffic keys
     ///   - receive: The receive (read) traffic keys
-    public func updateKeys(send: TrafficKeys, receive: TrafficKeys) {
-        cryptor.updateSendKeys(send)
-        cryptor.updateReceiveKeys(receive)
+    /// - Throws: `TLSRecordError.invalidKey` if key parameters are invalid
+    public func updateKeys(send: TrafficKeys, receive: TrafficKeys) throws {
+        try cryptor.updateSendKeys(send)
+        try cryptor.updateReceiveKeys(receive)
         state.withLock { state in
             state.sendEncryptionActive = true
             state.receiveEncryptionActive = true
@@ -79,8 +80,9 @@ public final class TLSRecordLayer: Sendable {
     /// activates handshake send keys before the client has sent its Finished.
     ///
     /// - Parameter keys: The send traffic keys
-    public func updateSendKeys(_ keys: TrafficKeys) {
-        cryptor.updateSendKeys(keys)
+    /// - Throws: `TLSRecordError.invalidKey` if key parameters are invalid
+    public func updateSendKeys(_ keys: TrafficKeys) throws {
+        try cryptor.updateSendKeys(keys)
         state.withLock { $0.sendEncryptionActive = true }
     }
 
@@ -91,8 +93,9 @@ public final class TLSRecordLayer: Sendable {
     /// defers application receive keys until ClientFinished is processed.
     ///
     /// - Parameter keys: The receive traffic keys
-    public func updateReceiveKeys(_ keys: TrafficKeys) {
-        cryptor.updateReceiveKeys(keys)
+    /// - Throws: `TLSRecordError.invalidKey` if key parameters are invalid
+    public func updateReceiveKeys(_ keys: TrafficKeys) throws {
+        try cryptor.updateReceiveKeys(keys)
         state.withLock { $0.receiveEncryptionActive = true }
     }
 

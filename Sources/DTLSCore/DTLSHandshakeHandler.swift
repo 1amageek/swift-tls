@@ -399,7 +399,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
-        guard finished.verifyData == expectedVerifyData else {
+        guard constantTimeEqual(finished.verifyData, expectedVerifyData) else {
             throw DTLSError.verifyDataMismatch
         }
 
@@ -732,7 +732,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
-        guard finished.verifyData == expectedVerifyData else {
+        guard constantTimeEqual(finished.verifyData, expectedVerifyData) else {
             throw DTLSError.verifyDataMismatch
         }
 
@@ -783,11 +783,8 @@ public final class DTLSServerHandshakeHandler: Sendable {
     }
 
     private static func generateCookieSecret() -> Data {
-        var bytes = Data(count: 32)
-        bytes.withUnsafeMutableBytes { ptr in
-            let _ = SecRandomCopyBytes(kSecRandomDefault, 32, ptr.baseAddress!)
-        }
-        return bytes
+        // Use secureRandomBytes which properly checks the return value
+        return try! secureRandomBytes(count: 32)
     }
 
     private static func computeHandshakeHash(

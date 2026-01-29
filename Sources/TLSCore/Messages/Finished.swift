@@ -58,15 +58,7 @@ public struct Finished: Sendable {
 
     /// Verify the finished message against expected verify data
     public func verify(expected: Data) -> Bool {
-        guard verifyData.count == expected.count else {
-            return false
-        }
-        // Constant-time comparison
-        var result: UInt8 = 0
-        for i in 0..<verifyData.count {
-            result |= verifyData[verifyData.startIndex + i] ^ expected[expected.startIndex + i]
-        }
-        return result == 0
+        constantTimeEqual(verifyData, expected)
     }
 }
 

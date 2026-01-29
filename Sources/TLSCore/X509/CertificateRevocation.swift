@@ -253,8 +253,11 @@ public struct RevocationChecker: Sendable {
         issuer: X509Certificate
     ) throws -> RevocationStatus {
         // Parse OCSP response
-        guard let ocspResponse = try? OCSPResponse.parse(from: response) else {
-            throw RevocationError.invalidOCSPResponse("Failed to parse OCSP response")
+        let ocspResponse: OCSPResponse
+        do {
+            ocspResponse = try OCSPResponse.parse(from: response)
+        } catch {
+            throw RevocationError.invalidOCSPResponse("Failed to parse OCSP response: \(error)")
         }
 
         // Verify response status
@@ -281,8 +284,11 @@ public struct RevocationChecker: Sendable {
         }
 
         // Parse BasicOCSPResponse
-        guard let basicResponse = try? BasicOCSPResponse.parse(from: responseData.response) else {
-            throw RevocationError.invalidOCSPResponse("Failed to parse BasicOCSPResponse")
+        let basicResponse: BasicOCSPResponse
+        do {
+            basicResponse = try BasicOCSPResponse.parse(from: responseData.response)
+        } catch {
+            throw RevocationError.invalidOCSPResponse("Failed to parse BasicOCSPResponse: \(error)")
         }
 
         // Verify response signature (simplified - should verify against responder cert)
@@ -439,8 +445,11 @@ public struct RevocationChecker: Sendable {
         }
 
         // Parse CRL
-        guard let crl = try? CRL.parse(from: data) else {
-            throw RevocationError.invalidCRL("Failed to parse CRL")
+        let crl: CRL
+        do {
+            crl = try CRL.parse(from: data)
+        } catch {
+            throw RevocationError.invalidCRL("Failed to parse CRL: \(error)")
         }
 
         // Cache CRL

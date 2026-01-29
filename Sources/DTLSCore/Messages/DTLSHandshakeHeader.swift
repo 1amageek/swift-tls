@@ -97,4 +97,53 @@ public struct DTLSHandshakeHeader: Sendable, Equatable {
         writer.writeBytes(body)
         return writer.finish()
     }
+
+    /// Fragment a handshake message into pieces that fit within maxFragmentSize.
+    /// Each fragment includes the 12-byte header with proper fragmentOffset/fragmentLength.
+    ///
+    /// - Parameters:
+    ///   - type: The handshake message type
+    ///   - messageSeq: The message sequence number
+    ///   - body: The complete message body
+    ///   - maxFragmentSize: Maximum body size per fragment (default 1200 for UDP MTU safety)
+    /// - Returns: Array of encoded fragments (each with header + body portion)
+    public static func fragmentMessage(
+        type: DTLSHandshakeType,
+        messageSeq: UInt16,
+        body: Data,
+        maxFragmentSize: Int = 1200
+    ) -> [Data] {
+        let totalLength = UInt32(body.count)
+
+        // If body fits in one fragment, return as single message
+        if body.count <= maxFragmentSize {
+            return [encodeMessage(type: type, messageSeq: messageSeq, body: body)]
+        }
+
+        var fragments: [Data] = []
+        var offset = 0
+
+        while offset < body.count {
+            let remainingLength = body.count - offset
+            let fragmentLength = min(remainingLength, maxFragmentSize)
+
+            let fragmentBody = body.subdata(in: offset..<(offset + fragmentLength))
+
+            var writer = TLSWriter()
+            let header = DTLSHandshakeHeader(
+                messageType: type,
+                length: totalLength,
+                messageSeq: messageSeq,
+                fragmentOffset: UInt32(offset),
+                fragmentLength: UInt32(fragmentLength)
+            )
+            header.encode(writer: &writer)
+            writer.writeBytes(fragmentBody)
+            fragments.append(writer.finish())
+
+            offset += fragmentLength
+        }
+
+        return fragments
+    }
 }

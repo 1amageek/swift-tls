@@ -52,7 +52,7 @@ public struct HelloVerifyRequest: Sendable {
         secret: SymmetricKey
     ) -> Bool {
         let expected = HMAC<SHA256>.authenticationCode(for: clientAddress, using: secret)
-        return Data(expected) == cookie
+        return constantTimeEqual(Data(expected), cookie)
     }
 
     /// Encode the HelloVerifyRequest body

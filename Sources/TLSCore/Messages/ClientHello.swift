@@ -31,14 +31,19 @@ public struct ClientHello: Sendable {
     // MARK: - Initialization
 
     /// Creates a ClientHello with the specified parameters
+    /// - Throws: `TLSDecodeError.invalidFormat` if random is not 32 bytes or session ID exceeds max length
     public init(
         random: Data,
         legacySessionID: Data = Data(),
         cipherSuites: [CipherSuite],
         extensions: [TLSExtension]
-    ) {
-        precondition(random.count == TLSConstants.randomLength, "Random must be 32 bytes")
-        precondition(legacySessionID.count <= TLSConstants.sessionIDMaxLength, "Session ID too long")
+    ) throws {
+        guard random.count == TLSConstants.randomLength else {
+            throw TLSDecodeError.invalidFormat("ClientHello random must be \(TLSConstants.randomLength) bytes, got \(random.count)")
+        }
+        guard legacySessionID.count <= TLSConstants.sessionIDMaxLength else {
+            throw TLSDecodeError.invalidFormat("ClientHello session ID too long: \(legacySessionID.count) bytes (max \(TLSConstants.sessionIDMaxLength))")
+        }
         self.random = random
         self.legacySessionID = legacySessionID
         self.cipherSuites = cipherSuites
@@ -50,12 +55,9 @@ public struct ClientHello: Sendable {
         legacySessionID: Data = Data(),
         cipherSuites: [CipherSuite] = [.tls_aes_128_gcm_sha256],
         extensions: [TLSExtension]
-    ) {
-        var random = Data(count: TLSConstants.randomLength)
-        random.withUnsafeMutableBytes { ptr in
-            _ = SecRandomCopyBytes(kSecRandomDefault, TLSConstants.randomLength, ptr.baseAddress!)
-        }
-        self.init(random: random, legacySessionID: legacySessionID, cipherSuites: cipherSuites, extensions: extensions)
+    ) throws {
+        let random = try secureRandomBytes(count: TLSConstants.randomLength)
+        try self.init(random: random, legacySessionID: legacySessionID, cipherSuites: cipherSuites, extensions: extensions)
     }
 
     // MARK: - Encoding
@@ -155,7 +157,7 @@ public struct ClientHello: Sendable {
             extensions.append(ext)
         }
 
-        return ClientHello(
+        return try ClientHello(
             random: random,
             legacySessionID: legacySessionID,
             cipherSuites: cipherSuites,

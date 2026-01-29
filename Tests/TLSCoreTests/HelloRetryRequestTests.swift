@@ -242,7 +242,7 @@ struct HelloRetryRequestTests {
         let serverMachine = ServerStateMachine(configuration: TestFixture.serverConfig())
 
         // A ClientHello without key_share should fail
-        let minimalClientHello = ClientHello(
+        let minimalClientHello = try ClientHello(
             random: Data(repeating: 0x01, count: 32),
             legacySessionID: Data(repeating: 0x00, count: 32),
             cipherSuites: [.tls_aes_128_gcm_sha256],

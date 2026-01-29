@@ -42,9 +42,12 @@ public final class TLSRecordCryptor: Sendable {
     // MARK: - Key Management
 
     /// Update the send (write) keys
-    public func updateSendKeys(_ keys: TrafficKeys) {
+    /// - Throws: `TLSRecordError.invalidKey` if IV is not 12 bytes
+    public func updateSendKeys(_ keys: TrafficKeys) throws {
+        guard keys.iv.count == 12 else {
+            throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
+        }
         state.withLock { state in
-            precondition(keys.iv.count == 12, "TLS 1.3 IV must be exactly 12 bytes")
             state.sendKey = keys.key
             state.sendIV = keys.iv
             state.sendSequenceNumber = 0
@@ -52,9 +55,12 @@ public final class TLSRecordCryptor: Sendable {
     }
 
     /// Update the receive (read) keys
-    public func updateReceiveKeys(_ keys: TrafficKeys) {
+    /// - Throws: `TLSRecordError.invalidKey` if IV is not 12 bytes
+    public func updateReceiveKeys(_ keys: TrafficKeys) throws {
+        guard keys.iv.count == 12 else {
+            throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
+        }
         state.withLock { state in
-            precondition(keys.iv.count == 12, "TLS 1.3 IV must be exactly 12 bytes")
             state.receiveKey = keys.key
             state.receiveIV = keys.iv
             state.receiveSequenceNumber = 0

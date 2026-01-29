@@ -50,21 +50,12 @@ public struct DTLSClientHello: Sendable {
         signatureAlgorithms: [TLSCore.SignatureScheme] = [.ecdsa_secp256r1_sha256]
     ) {
         self.clientVersion = clientVersion
-        self.random = random ?? Self.generateRandom()
+        self.random = random ?? (try! secureRandomBytes(count: 32))
         self.sessionID = sessionID
         self.cookie = cookie
         self.cipherSuites = cipherSuites
         self.supportedGroups = supportedGroups
         self.signatureAlgorithms = signatureAlgorithms
-    }
-
-    /// Generate 32 bytes of cryptographic random
-    private static func generateRandom() -> Data {
-        var bytes = Data(count: 32)
-        bytes.withUnsafeMutableBytes { ptr in
-            let _ = SecRandomCopyBytes(kSecRandomDefault, 32, ptr.baseAddress!)
-        }
-        return bytes
     }
 
     /// Encode the ClientHello body (without handshake header)

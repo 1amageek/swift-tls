@@ -500,7 +500,7 @@ public final class TLSConnection: Sendable {
                     }
 
                 case .keysAvailable(let info):
-                    updateCryptor(with: info)
+                    try updateCryptor(with: info)
 
                     // Flush any pending handshake data that was buffered before keys arrived
                     if !pendingEncryptedData.isEmpty {
@@ -523,8 +523,9 @@ public final class TLSConnection: Sendable {
                     sharedState.withLock { state in
                         state.handshakeCompleted = true
                         // Apply deferred application receive keys (server-side)
+                        // Keys were already validated when stored in updateCryptor()
                         if let pendingKeys = state.pendingReceiveKeys {
-                            state.cryptor?.updateReceiveKeys(pendingKeys)
+                            try! state.cryptor?.updateReceiveKeys(pendingKeys)
                             state.pendingReceiveKeys = nil
                         }
                     }
@@ -570,25 +571,48 @@ public final class TLSConnection: Sendable {
     /// - **Application level on client**: Both keys update immediately. The client emits
     ///   `keysAvailable(.application)` after processing server Finished and sending
     ///   ClientFinished, so no handshake data remains.
-    private func updateCryptor(with info: KeysAvailableInfo) {
+    private func updateCryptor(with info: KeysAvailableInfo) throws {
         let receiveSecret = handler.isClient ? info.serverSecret : info.clientSecret
         let sendSecret = handler.isClient ? info.clientSecret : info.serverSecret
+
+        // Derive and validate keys BEFORE the lock
+        // TrafficKeys.iv is always 12 bytes when derived via HKDF (per TLS 1.3 spec),
+        // so validation should always succeed. The throws is for API safety.
+        let sendKeys: TrafficKeys? = sendSecret.map { TrafficKeys(secret: $0, cipherSuite: info.cipherSuite) }
+        let receiveKeys: TrafficKeys? = receiveSecret.map { TrafficKeys(secret: $0, cipherSuite: info.cipherSuite) }
+
+        // Validate keys before entering the lock
+        if let keys = sendKeys {
+            guard keys.iv.count == 12 else {
+                throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
+            }
+        }
+        if let keys = receiveKeys {
+            guard keys.iv.count == 12 else {
+                throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
+            }
+        }
 
         // Early data keys go to a separate cryptor to preserve handshake keys
         if info.level == .earlyData {
             sharedState.withLock { state in
                 let earlyDataCryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
-                if let sndSecret = sendSecret {
-                    let sendKeys = TrafficKeys(secret: sndSecret, cipherSuite: info.cipherSuite)
-                    earlyDataCryptor.updateSendKeys(sendKeys)
+                if let keys = sendKeys {
+                    // Keys already validated above
+                    try! earlyDataCryptor.updateSendKeys(keys)
                 }
-                if let recvSecret = receiveSecret {
-                    let receiveKeys = TrafficKeys(secret: recvSecret, cipherSuite: info.cipherSuite)
-                    earlyDataCryptor.updateReceiveKeys(receiveKeys)
+                if let keys = receiveKeys {
+                    // Keys already validated above
+                    try! earlyDataCryptor.updateReceiveKeys(keys)
                 }
                 state.earlyDataCryptor = earlyDataCryptor
             }
             return
+        }
+
+        // Capture whether we need to defer receive keys (check state first)
+        let shouldDeferReceiveKeys = sharedState.withLock { state in
+            info.level == .application && !handler.isClient && !state.handshakeCompleted
         }
 
         sharedState.withLock { state in
@@ -598,23 +622,20 @@ public final class TLSConnection: Sendable {
                 state.cipherSuite = info.cipherSuite
             }
 
-            // Update send keys if available
-            if let sndSecret = sendSecret {
-                let sendKeys = TrafficKeys(secret: sndSecret, cipherSuite: info.cipherSuite)
-                state.cryptor?.updateSendKeys(sendKeys)
+            // Update send keys if available (already validated)
+            if let keys = sendKeys {
+                try! state.cryptor?.updateSendKeys(keys)
             }
 
-            // Update receive keys if available
-            if let recvSecret = receiveSecret {
-                if info.level == .application && !handler.isClient && !state.handshakeCompleted {
+            // Update receive keys if available (already validated)
+            if let keys = receiveKeys {
+                if shouldDeferReceiveKeys {
                     // Server initial handshake: defer receive key update until
                     // handshakeComplete fires (need handshake receive keys for ClientFinished).
                     // Post-handshake key updates (handshakeCompleted == true) apply immediately.
-                    let receiveKeys = TrafficKeys(secret: recvSecret, cipherSuite: info.cipherSuite)
-                    state.pendingReceiveKeys = receiveKeys
+                    state.pendingReceiveKeys = keys
                 } else {
-                    let receiveKeys = TrafficKeys(secret: recvSecret, cipherSuite: info.cipherSuite)
-                    state.cryptor?.updateReceiveKeys(receiveKeys)
+                    try! state.cryptor?.updateReceiveKeys(keys)
                 }
             }
         }

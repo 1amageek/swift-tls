@@ -33,17 +33,9 @@ public struct DTLSServerHello: Sendable {
         cipherSuite: DTLSCipherSuite
     ) {
         self.serverVersion = serverVersion
-        self.random = random ?? Self.generateRandom()
+        self.random = random ?? (try! secureRandomBytes(count: 32))
         self.sessionID = sessionID
         self.cipherSuite = cipherSuite
-    }
-
-    private static func generateRandom() -> Data {
-        var bytes = Data(count: 32)
-        bytes.withUnsafeMutableBytes { ptr in
-            let _ = SecRandomCopyBytes(kSecRandomDefault, 32, ptr.baseAddress!)
-        }
-        return bytes
     }
 
     /// Encode the ServerHello body

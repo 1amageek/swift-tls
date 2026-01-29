@@ -146,7 +146,7 @@ struct PSKEndToEndTests {
             maxEarlyDataSize: 0
         )
 
-        let serverTicket = ticketStore.generateTicket(for: storedSession)
+        let serverTicket = try ticketStore.generateTicket(for: storedSession)
 
         // Derive PSK that matches what the server will compute
         let keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)

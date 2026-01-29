@@ -29,8 +29,8 @@ struct RecordSecurityEdgeCaseTests {
     func tamperedCiphertextFailsDecryption() throws {
         let (sendKeys, recvKeys) = Self.makeTestKeys()
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(sendKeys)
-        cryptor.updateReceiveKeys(recvKeys)
+        try cryptor.updateSendKeys(sendKeys)
+        try cryptor.updateReceiveKeys(recvKeys)
 
         let plaintext = Data("sensitive data".utf8)
         let ciphertext = try cryptor.encrypt(content: plaintext, type: .applicationData)
@@ -50,10 +50,10 @@ struct RecordSecurityEdgeCaseTests {
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
 
         let encryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        encryptor.updateSendKeys(keys)
+        try encryptor.updateSendKeys(keys)
 
         let decryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        decryptor.updateReceiveKeys(keys)
+        try decryptor.updateReceiveKeys(keys)
 
         // Encrypt two records (seq 0 and seq 1)
         let ct0 = try encryptor.encrypt(content: Data("first".utf8), type: .applicationData)
@@ -75,8 +75,8 @@ struct RecordSecurityEdgeCaseTests {
     func recordExactlyAtMaxPlaintextSize() throws {
         let (sendKeys, recvKeys) = Self.makeTestKeys()
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(sendKeys)
-        cryptor.updateReceiveKeys(recvKeys)
+        try cryptor.updateSendKeys(sendKeys)
+        try cryptor.updateReceiveKeys(recvKeys)
 
         let maxData = Data(repeating: 0xAB, count: TLSRecordCodec.maxPlaintextSize)
         let ciphertext = try cryptor.encrypt(content: maxData, type: .applicationData)
@@ -90,8 +90,8 @@ struct RecordSecurityEdgeCaseTests {
     func zeroLengthContentEncryptDecrypt() throws {
         let (sendKeys, recvKeys) = Self.makeTestKeys()
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(sendKeys)
-        cryptor.updateReceiveKeys(recvKeys)
+        try cryptor.updateSendKeys(sendKeys)
+        try cryptor.updateReceiveKeys(recvKeys)
 
         let emptyData = Data()
         let ciphertext = try cryptor.encrypt(content: emptyData, type: .applicationData)
@@ -107,8 +107,8 @@ struct RecordSecurityEdgeCaseTests {
     func manyRecordsSequentiallySucceed() throws {
         let (sendKeys, recvKeys) = Self.makeTestKeys()
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(sendKeys)
-        cryptor.updateReceiveKeys(recvKeys)
+        try cryptor.updateSendKeys(sendKeys)
+        try cryptor.updateReceiveKeys(recvKeys)
 
         for i in 0..<100 {
             let data = Data("record \(i)".utf8)
@@ -124,7 +124,7 @@ struct RecordSecurityEdgeCaseTests {
     func identicalPlaintextsProduceDifferentCiphertexts() throws {
         let (sendKeys, _) = Self.makeTestKeys()
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(sendKeys)
+        try cryptor.updateSendKeys(sendKeys)
 
         let plaintext = Data("same content".utf8)
 

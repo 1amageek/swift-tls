@@ -55,10 +55,7 @@ public final class ClientStateMachine: Sendable {
             state.context.keyExchange = keyExchange
 
             // Generate random
-            var random = Data(count: TLSConstants.randomLength)
-            random.withUnsafeMutableBytes { ptr in
-                _ = SecRandomCopyBytes(kSecRandomDefault, TLSConstants.randomLength, ptr.baseAddress!)
-            }
+            let random = try secureRandomBytes(count: TLSConstants.randomLength)
             state.context.clientRandom = random
 
             // Session ID for TLS 1.3
@@ -158,7 +155,7 @@ public final class ClientStateMachine: Sendable {
                 var extensionsWithPsk = extensions
                 extensionsWithPsk.append(.preSharedKeyClient(offeredPsks))
 
-                let placeholderClientHello = ClientHello(
+                let placeholderClientHello = try ClientHello(
                     random: random,
                     legacySessionID: sessionID,
                     cipherSuites: cipherSuites,
@@ -192,7 +189,7 @@ public final class ClientStateMachine: Sendable {
                 var finalExtensions = extensions
                 finalExtensions.append(.preSharedKeyClient(offeredPsks))
 
-                let finalClientHello = ClientHello(
+                let finalClientHello = try ClientHello(
                     random: random,
                     legacySessionID: sessionID,
                     cipherSuites: cipherSuites,
@@ -212,7 +209,7 @@ public final class ClientStateMachine: Sendable {
                 }
             } else {
                 // Standard ClientHello without PSK
-                let clientHello = ClientHello(
+                let clientHello = try ClientHello(
                     random: random,
                     legacySessionID: sessionID,
                     cipherSuites: cipherSuites,
@@ -517,7 +514,7 @@ public final class ClientStateMachine: Sendable {
             var extensionsWithPsk = extensions
             extensionsWithPsk.append(.preSharedKeyClient(offeredPsks))
 
-            let placeholderClientHello = ClientHello(
+            let placeholderClientHello = try ClientHello(
                 random: clientRandom,
                 legacySessionID: sessionID,
                 cipherSuites: state.context.offeredCipherSuites,
@@ -551,7 +548,7 @@ public final class ClientStateMachine: Sendable {
             var finalExtensions = extensions
             finalExtensions.append(.preSharedKeyClient(offeredPsks))
 
-            let finalClientHello = ClientHello(
+            let finalClientHello = try ClientHello(
                 random: clientRandom,
                 legacySessionID: sessionID,
                 cipherSuites: state.context.offeredCipherSuites,
@@ -561,7 +558,7 @@ public final class ClientStateMachine: Sendable {
             clientHelloMessage = finalClientHello.encodeAsHandshake()
         } else {
             // Standard ClientHello2 without PSK
-            let clientHello = ClientHello(
+            let clientHello = try ClientHello(
                 random: clientRandom,
                 legacySessionID: sessionID,
                 cipherSuites: state.context.offeredCipherSuites,

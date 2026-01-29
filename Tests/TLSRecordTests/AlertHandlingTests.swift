@@ -29,7 +29,7 @@ struct AlertHandlingTests {
 
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        layer.updateSendKeys(keys)
+        try layer.updateSendKeys(keys)
 
         let alertRecord = try layer.writeAlert(.closeNotify)
 
@@ -44,7 +44,7 @@ struct AlertHandlingTests {
 
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        layer.updateKeys(send: keys, receive: keys)
+        try layer.updateKeys(send: keys, receive: keys)
 
         // Encrypt a close_notify alert using the cryptor via the layer
         let encrypted = try layer.writeAlert(.closeNotify)
@@ -67,7 +67,7 @@ struct AlertHandlingTests {
 
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        layer.updateReceiveKeys(keys)
+        try layer.updateReceiveKeys(keys)
 
         // Construct a plaintext alert record manually (content type 21)
         let alertData = TLSAlert.closeNotify.encode()
@@ -85,7 +85,7 @@ struct AlertHandlingTests {
 
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        layer.updateReceiveKeys(keys)
+        try layer.updateReceiveKeys(keys)
 
         // Construct a plaintext handshake record (content type 22)
         let handshakeData = Data([0x01, 0x00, 0x00, 0x05, 0x03, 0x03, 0x00, 0x00, 0x00])

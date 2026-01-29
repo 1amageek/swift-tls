@@ -38,13 +38,16 @@ public struct ServerHello: Sendable {
     // MARK: - Initialization
 
     /// Creates a ServerHello with the specified parameters
+    /// - Throws: `TLSDecodeError.invalidFormat` if random is not 32 bytes
     public init(
         random: Data,
         legacySessionIDEcho: Data,
         cipherSuite: CipherSuite,
         extensions: [TLSExtension]
-    ) {
-        precondition(random.count == TLSConstants.randomLength, "Random must be 32 bytes")
+    ) throws {
+        guard random.count == TLSConstants.randomLength else {
+            throw TLSDecodeError.invalidFormat("ServerHello random must be \(TLSConstants.randomLength) bytes, got \(random.count)")
+        }
         self.random = random
         self.legacySessionIDEcho = legacySessionIDEcho
         self.cipherSuite = cipherSuite
@@ -56,21 +59,19 @@ public struct ServerHello: Sendable {
         legacySessionIDEcho: Data,
         cipherSuite: CipherSuite,
         extensions: [TLSExtension]
-    ) {
-        var random = Data(count: TLSConstants.randomLength)
-        random.withUnsafeMutableBytes { ptr in
-            _ = SecRandomCopyBytes(kSecRandomDefault, TLSConstants.randomLength, ptr.baseAddress!)
-        }
-        self.init(random: random, legacySessionIDEcho: legacySessionIDEcho, cipherSuite: cipherSuite, extensions: extensions)
+    ) throws {
+        let random = try secureRandomBytes(count: TLSConstants.randomLength)
+        try self.init(random: random, legacySessionIDEcho: legacySessionIDEcho, cipherSuite: cipherSuite, extensions: extensions)
     }
 
     /// Creates a HelloRetryRequest
+    /// - Note: Uses the well-known HRR random value per RFC 8446
     public static func helloRetryRequest(
         legacySessionIDEcho: Data,
         cipherSuite: CipherSuite,
         extensions: [TLSExtension]
-    ) -> ServerHello {
-        ServerHello(
+    ) throws -> ServerHello {
+        try ServerHello(
             random: TLSConstants.helloRetryRequestRandom,
             legacySessionIDEcho: legacySessionIDEcho,
             cipherSuite: cipherSuite,
@@ -150,7 +151,7 @@ public struct ServerHello: Sendable {
         let context: MessageContext = isHRR ? .helloRetryRequest : .serverHello
         let extensions = try TLSExtension.decodeExtensions(from: extensionData, context: context)
 
-        return ServerHello(
+        return try ServerHello(
             random: random,
             legacySessionIDEcho: legacySessionIDEcho,
             cipherSuite: cipherSuite,

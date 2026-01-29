@@ -65,7 +65,7 @@ struct SecurityNegativeTests {
         // Build a ClientHello without supported_versions extension
         let keyExchange = try KeyExchange.generate(for: .x25519)
 
-        let clientHello = ClientHello(
+        let clientHello = try ClientHello(
             random: Data(repeating: 0xBB, count: TLSConstants.randomLength),
             legacySessionID: Data(),
             cipherSuites: [.tls_aes_128_gcm_sha256],
@@ -103,7 +103,7 @@ struct SecurityNegativeTests {
         // SHA-256 of "HelloRetryRequest" is the HRR sentinel
         let hrrRandom = TLSConstants.helloRetryRequestRandom
 
-        let serverHello = ServerHello(
+        let serverHello = try ServerHello(
             random: hrrRandom,
             legacySessionIDEcho: Data(),
             cipherSuite: .tls_aes_128_gcm_sha256,
@@ -116,7 +116,7 @@ struct SecurityNegativeTests {
         #expect(serverHello.isHelloRetryRequest == true)
 
         // Verify that a normal ServerHello is NOT detected as HRR
-        let normalServerHello = ServerHello(
+        let normalServerHello = try ServerHello(
             random: Data(repeating: 0x42, count: TLSConstants.randomLength),
             legacySessionIDEcho: Data(),
             cipherSuite: .tls_aes_128_gcm_sha256,
@@ -197,7 +197,7 @@ struct SecurityNegativeTests {
 
         // Craft a ServerHello with AES-256-GCM (not offered by client)
         let keyExchange = try KeyExchange.generate(for: .x25519)
-        let serverHello = ServerHello(
+        let serverHello = try ServerHello(
             legacySessionIDEcho: Data(),
             cipherSuite: .tls_aes_256_gcm_sha384,
             extensions: [
@@ -287,7 +287,7 @@ struct SecurityNegativeTests {
         // of the same type in a given extension block."
         let keyExchange = try KeyExchange.generate(for: .x25519)
 
-        let clientHello = ClientHello(
+        let clientHello = try ClientHello(
             random: Data(repeating: 0xCC, count: TLSConstants.randomLength),
             legacySessionID: Data(),
             cipherSuites: [.tls_aes_128_gcm_sha256],
@@ -373,8 +373,8 @@ struct SecurityNegativeTests {
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
 
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         // Encrypt zero-length content
         let emptyContent = Data()

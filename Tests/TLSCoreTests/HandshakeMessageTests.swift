@@ -124,7 +124,7 @@ struct HandshakeMessageTests {
         let random = Data(repeating: 0xAA, count: 32)
         let sessionID = Data(repeating: 0xBB, count: 32)
 
-        let clientHello = ClientHello(
+        let clientHello = try ClientHello(
             random: random,
             legacySessionID: sessionID,
             cipherSuites: [.tls_aes_128_gcm_sha256],
@@ -150,7 +150,7 @@ struct HandshakeMessageTests {
         let sessionID = Data(repeating: 0xBB, count: 32)
         let transportParams = Data([0x00, 0x01, 0x02, 0x03])
 
-        let original = ClientHello(
+        let original = try ClientHello(
             random: random,
             legacySessionID: sessionID,
             cipherSuites: [.tls_aes_128_gcm_sha256, .tls_aes_256_gcm_sha384],
@@ -174,7 +174,7 @@ struct HandshakeMessageTests {
         let random = Data(repeating: 0xAA, count: 32)
         let sessionID = Data(repeating: 0xBB, count: 32)
 
-        let original = ClientHello(
+        let original = try ClientHello(
             random: random,
             legacySessionID: sessionID,
             cipherSuites: [.tls_aes_128_gcm_sha256],
@@ -204,7 +204,7 @@ struct HandshakeMessageTests {
         let random = Data(repeating: 0xAA, count: 32)
         let sessionID = Data(repeating: 0xBB, count: 32)
 
-        let original = ClientHello(
+        let original = try ClientHello(
             random: random,
             legacySessionID: sessionID,
             cipherSuites: [.tls_aes_128_gcm_sha256],
@@ -242,7 +242,7 @@ struct HandshakeMessageTests {
     func encodeServerHello() throws {
         let sessionID = Data(repeating: 0xDD, count: 32)
 
-        let serverHello = ServerHello(
+        let serverHello = try ServerHello(
             legacySessionIDEcho: sessionID,
             cipherSuite: .tls_aes_128_gcm_sha256,
             extensions: [
@@ -256,7 +256,7 @@ struct HandshakeMessageTests {
 
     @Test("ServerHello HelloRetryRequest detection")
     func detectHelloRetryRequest() throws {
-        let hrr = ServerHello(
+        let hrr = try ServerHello(
             random: TLSConstants.helloRetryRequestRandom,
             legacySessionIDEcho: Data(count: 32),
             cipherSuite: .tls_aes_128_gcm_sha256,
@@ -265,7 +265,7 @@ struct HandshakeMessageTests {
 
         #expect(hrr.isHelloRetryRequest == true)
 
-        let normal = ServerHello(
+        let normal = try ServerHello(
             legacySessionIDEcho: Data(count: 32),
             cipherSuite: .tls_aes_128_gcm_sha256,
             extensions: []

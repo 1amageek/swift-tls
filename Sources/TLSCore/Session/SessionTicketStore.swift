@@ -103,16 +103,16 @@ public final class SessionTicketStore: Sendable {
     ///   - session: Session information to store
     ///   - nonce: Unique nonce for PSK derivation
     /// - Returns: NewSessionTicket message
+    /// - Throws: If secure random generation fails (indicates system-level failure)
     public func generateTicket(
         for session: StoredSession,
         nonce ticketNonce: Data? = nil
-    ) -> NewSessionTicket {
-        // Generate random ticket ID
-        var ticketId = Data(count: 32)
-        _ = ticketId.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 32, $0.baseAddress!) }
+    ) throws -> NewSessionTicket {
+        // Generate random ticket ID - failure here is a critical system error
+        let ticketId = try secureRandomBytes(count: 32)
 
         // Generate nonce if not provided
-        let nonce = ticketNonce ?? generateNonce()
+        let nonce = try ticketNonce ?? generateNonce()
 
         // Create session with nonce included for later PSK derivation
         let sessionWithNonce = StoredSession(
@@ -151,10 +151,9 @@ public final class SessionTicketStore: Sendable {
     }
 
     /// Generate a random nonce for ticket
-    private func generateNonce() -> Data {
-        var nonce = Data(count: 8)
-        _ = nonce.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 8, $0.baseAddress!) }
-        return nonce
+    /// - Throws: If secure random generation fails (indicates system-level failure)
+    private func generateNonce() throws -> Data {
+        try secureRandomBytes(count: 8)
     }
 
     /// Evict oldest sessions

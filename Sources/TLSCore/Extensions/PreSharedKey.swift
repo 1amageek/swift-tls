@@ -270,7 +270,7 @@ public struct PSKBinderHelper: Sendable {
         expected: Data
     ) -> Bool {
         let computed = binder(forKey: key, transcriptHash: transcriptHash)
-        return constantTimeCompare(computed, expected)
+        return constantTimeEqual(computed, expected)
     }
 
     // MARK: - Private Helpers
@@ -318,12 +318,4 @@ public struct PSKBinderHelper: Sendable {
         }
     }
 
-    private func constantTimeCompare(_ a: Data, _ b: Data) -> Bool {
-        guard a.count == b.count else { return false }
-        var result: UInt8 = 0
-        for i in 0..<a.count {
-            result |= a[a.startIndex + i] ^ b[b.startIndex + i]
-        }
-        return result == 0
-    }
 }

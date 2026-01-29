@@ -135,8 +135,8 @@ struct TLSRecordCryptorTests {
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
 
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         // Encrypt
         let plaintext = Data("Hello, TLS!".utf8)
@@ -159,8 +159,8 @@ struct TLSRecordCryptorTests {
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
 
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         let handshakeData = Data(repeating: 0xAA, count: 100)
         let ciphertext = try cryptor.encrypt(content: handshakeData, type: .handshake)
@@ -180,8 +180,8 @@ struct TLSRecordCryptorTests {
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
 
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         let plaintext = Data("test".utf8)
 
@@ -226,7 +226,7 @@ struct TLSRecordCryptorTests {
             secret: secret,
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
-        cryptor.updateSendKeys(keys)
+        try cryptor.updateSendKeys(keys)
 
         let oversized = Data(repeating: 0, count: TLSRecordCodec.maxPlaintextSize + 1)
         #expect(throws: TLSRecordError.self) {
@@ -244,8 +244,8 @@ struct TLSRecordCryptorTests {
             cipherSuite: .tls_aes_256_gcm_sha384,
         )
 
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         let plaintext = Data("AES-256 test".utf8)
         let ciphertext = try cryptor.encrypt(content: plaintext, type: .applicationData)
@@ -265,8 +265,8 @@ struct TLSRecordCryptorTests {
             cipherSuite: .tls_chacha20_poly1305_sha256,
         )
 
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         let plaintext = Data("ChaCha20 test".utf8)
         let ciphertext = try cryptor.encrypt(content: plaintext, type: .applicationData)
@@ -335,7 +335,7 @@ struct TLSRecordLayerTests {
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
 
-        layer.updateKeys(send: sendKeys, receive: sendKeys)
+        try layer.updateKeys(send: sendKeys, receive: sendKeys)
 
         // Write application data
         let plaintext = Data("Hello from record layer!".utf8)
@@ -364,7 +364,7 @@ struct TLSRecordLayerTests {
             secret: secret,
             cipherSuite: .tls_aes_128_gcm_sha256,
         )
-        layer.updateKeys(send: keys, receive: keys)
+        try layer.updateKeys(send: keys, receive: keys)
 
         // Create data larger than max plaintext size
         let largeData = Data(repeating: 0x42, count: TLSRecordCodec.maxPlaintextSize + 100)
@@ -404,7 +404,7 @@ struct TLSRecordLayerIndependentKeyTests {
         )
 
         // Only update send keys
-        layer.updateSendKeys(keys)
+        try layer.updateSendKeys(keys)
 
         // Writing should work (send encryption active)
         let plaintext = Data("send-only test".utf8)
@@ -431,13 +431,13 @@ struct TLSRecordLayerIndependentKeyTests {
 
         // Use a separate layer to produce encrypted data
         let producerLayer = TLSRecordLayer(cipherSuite: .tls_aes_128_gcm_sha256)
-        producerLayer.updateSendKeys(keys)
+        try producerLayer.updateSendKeys(keys)
 
         let plaintext = Data("receive-only test".utf8)
         let encrypted = try producerLayer.writeApplicationData(plaintext)
 
         // Only update receive keys on the consumer
-        layer.updateReceiveKeys(keys)
+        try layer.updateReceiveKeys(keys)
 
         // Decryption should work
         let outputs = try layer.processReceivedData(encrypted)
@@ -463,7 +463,7 @@ struct TLSRecordLayerIndependentKeyTests {
             secret: secret,
             cipherSuite: .tls_aes_128_gcm_sha256
         )
-        layer.updateSendKeys(keys)
+        try layer.updateSendKeys(keys)
 
         let encryptedAlert = try layer.writeAlert(.closeNotify)
         #expect(encryptedAlert[0] == TLSContentType.applicationData.rawValue) // 23
@@ -486,8 +486,8 @@ struct TLSRecordLayerIndependentKeyTests {
         let appKeys = TrafficKeys(secret: appSecret, cipherSuite: .tls_aes_128_gcm_sha256)
 
         // Step 1: Handshake keys — both directions
-        serverLayer.updateKeys(send: hsKeys, receive: hsKeys)
-        clientLayer.updateKeys(send: hsKeys, receive: hsKeys)
+        try serverLayer.updateKeys(send: hsKeys, receive: hsKeys)
+        try clientLayer.updateKeys(send: hsKeys, receive: hsKeys)
 
         // Server writes handshake data, client reads it
         let hsData = Data("handshake".utf8)
@@ -499,14 +499,14 @@ struct TLSRecordLayerIndependentKeyTests {
         }
 
         // Step 2: Server transitions to application send keys only
-        serverLayer.updateSendKeys(appKeys)
+        try serverLayer.updateSendKeys(appKeys)
 
         // Server can now write with app keys
         let appData = Data("application".utf8)
         let appEncrypted = try serverLayer.writeApplicationData(appData)
 
         // Client needs app receive keys to read this
-        clientLayer.updateReceiveKeys(appKeys)
+        try clientLayer.updateReceiveKeys(appKeys)
         let appOutputs = try clientLayer.processReceivedData(appEncrypted)
         #expect(appOutputs.count == 1)
         if case .applicationData(let data) = appOutputs[0] {
@@ -514,8 +514,8 @@ struct TLSRecordLayerIndependentKeyTests {
         }
 
         // Step 3: Server activates app receive keys
-        serverLayer.updateReceiveKeys(appKeys)
-        clientLayer.updateSendKeys(appKeys)
+        try serverLayer.updateReceiveKeys(appKeys)
+        try clientLayer.updateSendKeys(appKeys)
 
         let clientData = Data("from client".utf8)
         let clientEncrypted = try clientLayer.writeApplicationData(clientData)
@@ -556,7 +556,7 @@ struct AdditionalCipherSuiteTests {
             cipherSuite: .tls_chacha20_poly1305_sha256
         )
 
-        layer.updateKeys(send: keys, receive: keys)
+        try layer.updateKeys(send: keys, receive: keys)
 
         let plaintext = Data("ChaCha20 record layer test".utf8)
         let encrypted = try layer.writeApplicationData(plaintext)
@@ -583,7 +583,7 @@ struct AdditionalCipherSuiteTests {
             cipherSuite: .tls_aes_256_gcm_sha384
         )
 
-        layer.updateKeys(send: keys, receive: keys)
+        try layer.updateKeys(send: keys, receive: keys)
 
         let plaintext = Data("AES-256 record layer test".utf8)
         let encrypted = try layer.writeApplicationData(plaintext)
@@ -609,7 +609,7 @@ struct AdditionalCipherSuiteTests {
             secret: aes128Secret,
             cipherSuite: .tls_aes_128_gcm_sha256
         )
-        aes128Layer.updateKeys(send: aes128Keys, receive: aes128Keys)
+        try aes128Layer.updateKeys(send: aes128Keys, receive: aes128Keys)
 
         let plaintext = Data("cross-cipher test".utf8)
         let encrypted = try aes128Layer.writeApplicationData(plaintext)
@@ -621,7 +621,7 @@ struct AdditionalCipherSuiteTests {
             secret: chachaSecret,
             cipherSuite: .tls_chacha20_poly1305_sha256
         )
-        chachaLayer.updateReceiveKeys(chachaKeys)
+        try chachaLayer.updateReceiveKeys(chachaKeys)
 
         // Decryption should fail because the keys and cipher suite differ
         #expect(throws: (any Error).self) {

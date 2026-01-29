@@ -21,7 +21,7 @@ struct ConcurrentRecordCryptorTests {
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(keys)
+        try cryptor.updateSendKeys(keys)
 
         let results = try await withThrowingTaskGroup(of: Data.self) { group in
             for i in 0..<100 {
@@ -55,8 +55,8 @@ struct ConcurrentRecordCryptorTests {
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         let messageCount = 50
         var ciphertexts: [Data] = []
@@ -83,8 +83,8 @@ struct ConcurrentRecordCryptorTests {
         let cryptor = TLSRecordCryptor(cipherSuite: .tls_aes_128_gcm_sha256)
         let secret = SymmetricKey(size: .bits256)
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        cryptor.updateSendKeys(keys)
-        cryptor.updateReceiveKeys(keys)
+        try cryptor.updateSendKeys(keys)
+        try cryptor.updateReceiveKeys(keys)
 
         // Encrypt 10 messages sequentially
         var ciphertexts: [Data] = []
@@ -122,7 +122,7 @@ struct ConcurrentRecordLayerTests {
         let secret = SymmetricKey(size: .bits256)
         let sendKeys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
         let receiveKeys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
-        layer.updateKeys(send: sendKeys, receive: receiveKeys)
+        try layer.updateKeys(send: sendKeys, receive: receiveKeys)
 
         let results = try await withThrowingTaskGroup(of: Data.self) { group in
             for i in 0..<50 {
@@ -160,8 +160,8 @@ struct ConcurrentRecordLayerTests {
         let keys = TrafficKeys(secret: secret, cipherSuite: .tls_aes_128_gcm_sha256)
 
         // Sender encrypts with keys, receiver decrypts with same keys
-        senderLayer.updateSendKeys(keys)
-        receiverLayer.updateReceiveKeys(keys)
+        try senderLayer.updateSendKeys(keys)
+        try receiverLayer.updateReceiveKeys(keys)
 
         let messageCount = 50
         var expectedMessages: [Data] = []
