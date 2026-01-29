@@ -20,6 +20,17 @@ public struct DTLSCertificate: Sendable {
     /// SHA-256 fingerprint of the DER-encoded certificate
     public let fingerprint: CertificateFingerprint
 
+    /// Create a certificate from a DER-encoded X.509 certificate and its private key.
+    ///
+    /// Use this when generating certificates externally (e.g., with libp2p extensions)
+    /// and wrapping them as `DTLSCertificate` for use with DTLS.
+    public init(derEncoded: Data, privateKey: P256.Signing.PrivateKey) throws {
+        let certificate = try X509.Certificate(derEncoded: Array(derEncoded))
+        self.x509 = X509Certificate(certificate, derEncoded: derEncoded)
+        self.privateKey = privateKey
+        self.fingerprint = CertificateFingerprint.fromDER(derEncoded)
+    }
+
     /// Generate a self-signed ECDSA P-256 certificate
     /// - Parameter commonName: The Common Name (CN) for the certificate subject
     /// - Returns: A new self-signed certificate with private key
@@ -57,14 +68,7 @@ public struct DTLSCertificate: Sendable {
         try certificate.serialize(into: &serializer)
         let derData = Data(serializer.serializedBytes)
 
-        let x509Cert = X509Certificate(certificate, derEncoded: derData)
-        let fingerprint = CertificateFingerprint.fromDER(derData)
-
-        return DTLSCertificate(
-            x509: x509Cert,
-            privateKey: privateKey,
-            fingerprint: fingerprint
-        )
+        return try DTLSCertificate(derEncoded: derData, privateKey: privateKey)
     }
 
     /// The DER-encoded certificate data
