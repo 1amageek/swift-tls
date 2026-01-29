@@ -2,6 +2,13 @@
 ///
 /// Manages epoch and sequence numbers for DTLS record processing.
 /// Epoch increments on each ChangeCipherSpec. Sequence number is per-epoch.
+///
+/// ## RFC 6347 Compliance
+///
+/// - **§4.1**: Epoch mismatch records are silently discarded
+/// - **§4.1.2.6**: 64-bit sliding window anti-replay protection
+/// - **§4.1.2.6**: Replay window updated only after successful MAC verification
+/// - **§4.1.2.7**: Invalid records are silently discarded (no fatal alert)
 
 import Foundation
 import Synchronization
@@ -23,6 +30,9 @@ public final class DTLSRecordLayer: Sendable {
         var readFixedIV: Data?
         var writeKey: SymmetricKey?
         var writeFixedIV: Data?
+
+        // Anti-replay protection (RFC 6347 §4.1.2.6)
+        var replayWindow: AntiReplayWindow = AntiReplayWindow()
     }
 
     public init() {
@@ -46,6 +56,8 @@ public final class DTLSRecordLayer: Sendable {
             s.readSequenceNumber = 0
             s.readKey = key
             s.readFixedIV = fixedIV
+            // Reset replay window on epoch change
+            s.replayWindow.reset()
         }
     }
 
@@ -92,17 +104,55 @@ public final class DTLSRecordLayer: Sendable {
 
     /// Decode and decrypt a received record
     /// - Parameter data: Raw DTLS record data
-    /// - Returns: Decoded record with decrypted payload, or nil if insufficient data
-    public func decodeRecord(from data: Data) throws -> (DTLSRecord, Int)? {
+    /// - Returns: `RecordDecodeResult` indicating success, insufficient data, or discard reason
+    public func decodeRecord(from data: Data) throws -> RecordDecodeResult {
         guard let (record, consumed) = try DTLSRecord.decode(from: data) else {
-            return nil
+            return .insufficientData
         }
 
-        let (key, fixedIV) = state.withLock { s -> (SymmetricKey?, Data?) in
-            (s.readKey, s.readFixedIV)
+        let (readEpoch, key, fixedIV) = state.withLock { s -> (UInt16, SymmetricKey?, Data?) in
+            (s.readEpoch, s.readKey, s.readFixedIV)
+        }
+
+        // RFC 6347 §4.1: Check epoch before processing
+        // Records from different epochs should be silently discarded
+        if record.epoch != readEpoch {
+            // Epoch mismatch - silently discard (RFC 6347 §4.1)
+            // "implementations SHOULD discard packets from earlier epochs"
+            return .discarded(consumed: consumed, reason: .epochMismatch)
         }
 
         if let key, let fixedIV, record.epoch > 0 {
+            // For encrypted records: check replay window BEFORE decryption (preliminary check)
+            // but only UPDATE the window AFTER successful decryption (RFC 6347 §4.1.2.6)
+            let replayCheckResult = state.withLock { s -> DiscardReason? in
+                // Preliminary check: would this sequence number be accepted?
+                // Don't mark as received yet - just check
+                if !s.replayWindow.isInitialized {
+                    return nil  // First packet, will be accepted
+                }
+                let seqNum = record.sequenceNumber
+                let highest = s.replayWindow.currentHighest
+                if seqNum > highest {
+                    return nil  // New highest, will be accepted
+                }
+                let diff = highest - seqNum
+                if diff >= AntiReplayWindow.windowSize {
+                    return .tooOld  // Too old
+                }
+                // Check if already received (without modifying state)
+                if s.replayWindow.isReceived(sequenceNumber: seqNum) {
+                    return .replayed
+                }
+                return nil
+            }
+
+            if let discardReason = replayCheckResult {
+                // Silently discard replayed/too-old records (RFC 6347 §4.1.2.6)
+                // Return consumed bytes so caller can continue to next record
+                return .discarded(consumed: consumed, reason: discardReason)
+            }
+
             // Decrypt
             let aad = record.buildAAD(
                 plaintextLength: record.fragment.count - 8 - 16 // subtract nonce and tag
@@ -114,12 +164,18 @@ public final class DTLSRecordLayer: Sendable {
                 additionalData: aad
             )
 
+            // Decryption succeeded - NOW update the replay window (RFC 6347 §4.1.2.6)
+            state.withLock { s in
+                _ = s.replayWindow.shouldAccept(sequenceNumber: record.sequenceNumber)
+            }
+
             var decryptedRecord = record
             decryptedRecord.fragment = plaintext
-            return (decryptedRecord, consumed)
+            return .record(decryptedRecord, consumed: consumed)
         }
 
-        return (record, consumed)
+        // Unencrypted records (epoch 0) don't use replay protection
+        return .record(record, consumed: consumed)
     }
 
     /// Current write epoch

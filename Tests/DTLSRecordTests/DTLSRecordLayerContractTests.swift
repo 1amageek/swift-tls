@@ -173,7 +173,8 @@ struct DTLSRecordLayerContractTests {
             plaintext: plaintext
         )
 
-        guard let (decoded, _) = try reader.decodeRecord(from: encoded) else {
+        let result = try reader.decodeRecord(from: encoded)
+        guard case .record(let decoded, _) = result else {
             Issue.record("Failed to decode record")
             return
         }

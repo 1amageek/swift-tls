@@ -157,3 +157,32 @@ extension DTLSRecordError: CustomStringConvertible {
         }
     }
 }
+
+// MARK: - Record Decode Result
+
+/// Result of decoding a DTLS record
+///
+/// RFC 6347 §4.1.2.6 requires that replayed or too-old records be silently discarded,
+/// but the datagram processing should continue to subsequent records.
+public enum RecordDecodeResult: Sendable {
+    /// A valid record was decoded
+    case record(DTLSRecord, consumed: Int)
+
+    /// Insufficient data to decode a complete record
+    case insufficientData
+
+    /// Record was discarded (processing should continue to next record)
+    case discarded(consumed: Int, reason: DiscardReason)
+}
+
+/// Reason why a record was discarded
+public enum DiscardReason: Sendable {
+    /// Record is a replay (already received)
+    case replayed
+
+    /// Record sequence number is too old (outside replay window)
+    case tooOld
+
+    /// Record epoch does not match current read epoch (RFC 6347 §4.1)
+    case epochMismatch
+}

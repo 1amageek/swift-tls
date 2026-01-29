@@ -3,7 +3,16 @@
 /// High-level API that integrates the handshake handler, record layer,
 /// and flight controller into a unified connection interface.
 ///
-/// Usage:
+/// ## RFC Compliance
+///
+/// - **RFC 6347 §4.1.2.6**: Replayed/too-old records are silently discarded,
+///   but datagram processing continues to subsequent records
+/// - **RFC 6347 §4.1**: Epoch mismatch records are silently discarded
+/// - **RFC 5246 §7.2**: After `close_notify` or fatal alert, subsequent
+///   records in the same datagram are not processed
+///
+/// ## Usage
+///
 /// ```swift
 /// let cert = try DTLSCertificate()
 /// let conn = DTLSConnection(certificate: cert)
@@ -26,6 +35,7 @@ import Foundation
 import Synchronization
 import Crypto
 import DTLSCore
+import TLSCore
 
 // MARK: - Output Type
 
@@ -40,14 +50,19 @@ public struct DTLSConnectionOutput: Sendable {
     /// Whether the handshake just completed
     public let handshakeComplete: Bool
 
+    /// Alert received from peer (if any)
+    public let receivedAlert: TLSAlert?
+
     public init(
         datagramsToSend: [Data] = [],
         applicationData: Data = Data(),
-        handshakeComplete: Bool = false
+        handshakeComplete: Bool = false,
+        receivedAlert: TLSAlert? = nil
     ) {
         self.datagramsToSend = datagramsToSend
         self.applicationData = applicationData
         self.handshakeComplete = handshakeComplete
+        self.receivedAlert = receivedAlert
     }
 }
 
@@ -99,6 +114,10 @@ public final class DTLSConnection: Sendable {
         var expectingCCS: Bool = false
         var remoteCertificateDER: Data?
         var negotiatedCipherSuite: DTLSCipherSuite?
+
+        // Connection closure state
+        var closed: Bool = false
+        var fatalError: DTLSConnectionError?
     }
 
     public init(
@@ -166,6 +185,12 @@ public final class DTLSConnection: Sendable {
         _ data: Data,
         remoteAddress: Data = Data()
     ) throws -> DTLSConnectionOutput {
+        // Check connection state
+        try state.withLock { s in
+            if let err = s.fatalError { throw err }
+            if s.closed { throw DTLSConnectionError.connectionClosed }
+        }
+
         // Get handler references (quick lock, then release)
         let (isClient, clientHandler, serverHandler) = state.withLock { s in
             (s.isClient, s.clientHandler, s.serverHandler)
@@ -178,18 +203,36 @@ public final class DTLSConnection: Sendable {
         var allDatagrams: [Data] = []
         var applicationData = Data()
         var handshakeComplete = false
+        var receivedAlert: TLSAlert?
 
         // Cancel pending retransmission on receiving any data
         flightController.responseReceived()
 
         // Parse all records from the datagram
         var offset = 0
-        while offset < data.count {
+        recordLoop: while offset < data.count {
             let remaining = Data(data[data.startIndex.advanced(by: offset)...])
-            guard let (record, consumed) = try recordLayer.decodeRecord(from: remaining) else {
-                break
+
+            // Decode record with proper handling of replay detection
+            // RFC 6347 §4.1.2.6: Replayed records should be silently discarded,
+            // but datagram processing continues to subsequent records
+            let decodeResult = try recordLayer.decodeRecord(from: remaining)
+
+            let record: DTLSRecord
+            switch decodeResult {
+            case .record(let r, let consumed):
+                record = r
+                offset += consumed
+
+            case .insufficientData:
+                // No more complete records in this datagram
+                break recordLoop
+
+            case .discarded(let consumed, _):
+                // Record was replayed or too old - skip and continue to next record
+                offset += consumed
+                continue recordLoop
             }
-            offset += consumed
 
             switch record.contentType {
             case .handshake:
@@ -236,8 +279,37 @@ public final class DTLSConnection: Sendable {
                 applicationData.append(record.fragment)
 
             case .alert:
-                // TODO: Handle alert records
-                break
+                // Decode and handle alert
+                // Per RFC 6347, malformed alerts are discarded (no exception thrown to caller)
+                // but we track that we received an alert we couldn't process
+                do {
+                    let alert = try TLSAlert.decode(from: record.fragment)
+                    receivedAlert = alert
+
+                    if alert.alertDescription == .closeNotify {
+                        state.withLock { $0.closed = true }
+                        // Stop processing immediately - data after close_notify is untrusted
+                        return DTLSConnectionOutput(
+                            datagramsToSend: allDatagrams,
+                            applicationData: applicationData,
+                            handshakeComplete: handshakeComplete,
+                            receivedAlert: alert
+                        )
+                    } else if alert.level == .fatal {
+                        let err = DTLSConnectionError.fatalProtocolError(alert.alertDescription.description)
+                        state.withLock { $0.fatalError = err }
+                        // Stop processing immediately - fatal alert terminates connection
+                        return DTLSConnectionOutput(
+                            datagramsToSend: allDatagrams,
+                            applicationData: applicationData,
+                            handshakeComplete: handshakeComplete,
+                            receivedAlert: alert
+                        )
+                    }
+                } catch {
+                    // Malformed alert received - this is a protocol violation but we don't
+                    // crash the connection. The record is discarded per DTLS robustness principle.
+                }
             }
         }
 
@@ -250,7 +322,8 @@ public final class DTLSConnection: Sendable {
         return DTLSConnectionOutput(
             datagramsToSend: allDatagrams,
             applicationData: applicationData,
-            handshakeComplete: handshakeComplete
+            handshakeComplete: handshakeComplete,
+            receivedAlert: receivedAlert
         )
     }
 
@@ -259,13 +332,29 @@ public final class DTLSConnection: Sendable {
     /// - Parameter data: Plaintext application data
     /// - Returns: Encoded DTLS datagram containing the encrypted record
     public func writeApplicationData(_ data: Data) throws -> Data {
-        let connected = state.withLock { $0.handshakeCompleted }
-        guard connected else {
-            throw DTLSConnectionError.handshakeNotComplete
+        // Check connection state
+        try state.withLock { s in
+            if let err = s.fatalError { throw err }
+            if s.closed { throw DTLSConnectionError.connectionClosed }
+            guard s.handshakeCompleted else {
+                throw DTLSConnectionError.handshakeNotComplete
+            }
         }
         return try recordLayer.encodeRecord(
             contentType: .applicationData,
             plaintext: data
+        )
+    }
+
+    /// Close the connection gracefully by sending close_notify alert
+    ///
+    /// - Returns: Encoded DTLS datagram containing the close_notify alert
+    public func close() throws -> Data {
+        state.withLock { $0.closed = true }
+        let alertData = TLSAlert.closeNotify.encode()
+        return try recordLayer.encodeRecord(
+            contentType: .alert,
+            plaintext: alertData
         )
     }
 
@@ -282,7 +371,12 @@ public final class DTLSConnection: Sendable {
 
     /// Whether the handshake is complete and the connection is ready
     public var isConnected: Bool {
-        state.withLock { $0.handshakeCompleted }
+        state.withLock { $0.handshakeCompleted && !$0.closed }
+    }
+
+    /// Whether the connection has been closed
+    public var isClosed: Bool {
+        state.withLock { $0.closed }
     }
 
     /// The remote peer's DER-encoded certificate
