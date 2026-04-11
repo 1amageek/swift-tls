@@ -26,6 +26,7 @@ Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certifica
 - X.509 certificate chain validation
 - Key Update
 - Transport-agnostic design (TCP, QUIC, etc.)
+- `TLSConnection` and `TLSRecordLayer` accept `DataProtocol` input, which lets adapters feed `ByteBufferView` and similar byte collections without pre-converting to `Data`
 - Swift 6 strict concurrency (`Sendable`, `Mutex`)
 
 ### DTLS 1.2
@@ -105,6 +106,12 @@ try await tcp.send(encrypted)
 let closeNotify = try tls.close()
 try await tcp.send(closeNotify)
 ```
+
+### Byte-Oriented Adapters
+
+`TLSConnection.processReceivedData(_:)`, `TLSConnection.writeApplicationData(_:)`, and the corresponding `TLSRecordLayer` APIs accept `DataProtocol` input.
+
+That means adapter layers can pass views such as `ByteBuffer.readableBytesView` directly into the TLS stack instead of eagerly materializing a fresh `Data` value first. The TLS record and AEAD boundaries still produce `Data`, but the extra adapter-side copy is no longer required.
 
 ### TLSCore Only (for custom transports)
 

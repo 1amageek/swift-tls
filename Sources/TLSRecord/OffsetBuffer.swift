@@ -24,9 +24,9 @@ struct OffsetBuffer: Sendable {
         readOffset >= data.count
     }
 
-    /// Append new data to the buffer
-    mutating func append(_ newData: Data) {
-        data.append(newData)
+    /// Append new data to the buffer.
+    mutating func append<Bytes: DataProtocol>(_ newData: Bytes) {
+        data.append(contentsOf: newData)
     }
 
     /// A view of the unconsumed bytes (zero-copy slice)

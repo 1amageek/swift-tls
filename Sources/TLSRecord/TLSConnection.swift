@@ -116,7 +116,7 @@ public final class TLSConnection: Sendable {
     /// - Returns: Output containing data to send, received application data, and status
     /// - Throws: `TLSConnectionError.concurrentReadNotAllowed` if called concurrently,
     ///           `TLSConnectionError.fatalProtocolError` if a prior fatal error occurred
-    public func processReceivedData(_ data: Data) async throws -> TLSConnectionOutput {
+    public func processReceivedData<Bytes: RandomAccessCollection & DataProtocol>(_ data: Bytes) async throws -> TLSConnectionOutput where Bytes.Element == UInt8 {
         // Check for fatal error before proceeding
         try checkFatalError()
 
@@ -162,7 +162,7 @@ public final class TLSConnection: Sendable {
     /// - Returns: Encrypted TLS records ready to send over TCP
     /// - Throws: If the handshake is not complete, connection is closed,
     ///           a fatal error occurred, or encryption fails
-    public func writeApplicationData(_ data: Data) throws -> Data {
+    public func writeApplicationData<Bytes: RandomAccessCollection & DataProtocol>(_ data: Bytes) throws -> Data where Bytes.Element == UInt8 {
         try writeLock.withLock { _ -> Data in
             // Check shared state under writeLock for atomic close/error check + encrypt
             let cryptor = try sharedState.withLock { state -> TLSRecordCryptor in
@@ -645,11 +645,11 @@ public final class TLSConnection: Sendable {
 
     /// Encrypt content with AEAD and wrap in TLS record framing.
     /// Fragments if the content exceeds the maximum plaintext size.
-    private func encryptAndFrame(
-        content: Data,
+    private func encryptAndFrame<Bytes: RandomAccessCollection & DataProtocol>(
+        content: Bytes,
         type: TLSContentType,
         cryptor: TLSRecordCryptor
-    ) throws -> Data {
+    ) throws -> Data where Bytes.Element == UInt8 {
         // Pre-allocate result capacity: each fragment produces a TLS record
         // (5-byte header + fragment + content-type byte + 16-byte AEAD tag)
         let fragmentCount = (content.count + TLSRecordCodec.maxPlaintextSize - 1) / max(TLSRecordCodec.maxPlaintextSize, 1)
@@ -662,8 +662,12 @@ public final class TLSConnection: Sendable {
             let fragmentSize = min(TLSRecordCodec.maxPlaintextSize, content.count - offset)
             let start = content.index(content.startIndex, offsetBy: offset)
             let end = content.index(start, offsetBy: fragmentSize)
-            // Data(fragment) creates a contiguous copy required by AEAD encryption
-            let fragment = Data(content[start..<end])
+            let fragment: Data
+            if offset == 0, fragmentSize == content.count, let directData = content as? Data {
+                fragment = directData
+            } else {
+                fragment = Data(content[start..<end])
+            }
 
             let ciphertext = try cryptor.encrypt(content: fragment, type: type)
             result.append(TLSRecordCodec.encodeCiphertext(ciphertext))

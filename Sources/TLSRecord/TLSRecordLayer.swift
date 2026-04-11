@@ -107,7 +107,7 @@ public final class TLSRecordLayer: Sendable {
     ///
     /// - Parameter data: The application data to send
     /// - Returns: Encoded TLS ciphertext records ready to send over TCP
-    public func writeApplicationData(_ data: Data) throws -> Data {
+    public func writeApplicationData<Bytes: RandomAccessCollection & DataProtocol>(_ data: Bytes) throws -> Data where Bytes.Element == UInt8 {
         try writeRecord(content: data, type: .applicationData)
     }
 
@@ -152,7 +152,7 @@ public final class TLSRecordLayer: Sendable {
     ///
     /// - Parameter data: Raw TCP data received
     /// - Returns: Array of decoded record layer outputs
-    public func processReceivedData(_ data: Data) throws -> [TLSRecordOutput] {
+    public func processReceivedData<Bytes: DataProtocol>(_ data: Bytes) throws -> [TLSRecordOutput] {
         // Extract all complete records atomically in a single lock
         let records = try state.withLock { state -> [TLSRecord] in
             state.readBuffer.append(data)
@@ -192,7 +192,7 @@ public final class TLSRecordLayer: Sendable {
     }
 
     /// Write encrypted record(s), fragmenting if necessary
-    private func writeRecord(content: Data, type: TLSContentType) throws -> Data {
+    private func writeRecord<Bytes: RandomAccessCollection & DataProtocol>(content: Bytes, type: TLSContentType) throws -> Data where Bytes.Element == UInt8 {
         // Pre-allocate result capacity
         let fragmentCount = (content.count + TLSRecordCodec.maxPlaintextSize - 1) / max(TLSRecordCodec.maxPlaintextSize, 1)
         let overhead = TLSRecordCodec.headerSize + 1 + 16 // header + content type + AEAD tag
@@ -204,8 +204,12 @@ public final class TLSRecordLayer: Sendable {
             let fragmentSize = min(TLSRecordCodec.maxPlaintextSize, content.count - offset)
             let start = content.index(content.startIndex, offsetBy: offset)
             let end = content.index(start, offsetBy: fragmentSize)
-            // Data(fragment) creates a contiguous copy required by AEAD encryption
-            let fragment = Data(content[start..<end])
+            let fragment: Data
+            if offset == 0, fragmentSize == content.count, let directData = content as? Data {
+                fragment = directData
+            } else {
+                fragment = Data(content[start..<end])
+            }
 
             let ciphertext = try cryptor.encrypt(content: fragment, type: type)
             result.append(TLSRecordCodec.encodeCiphertext(ciphertext))
