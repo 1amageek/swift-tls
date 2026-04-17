@@ -520,12 +520,12 @@ public final class TLSConnection: Sendable {
 
                 case .handshakeComplete:
                     handshakeComplete = true
-                    sharedState.withLock { state in
+                    try sharedState.withLock { state in
                         state.handshakeCompleted = true
                         // Apply deferred application receive keys (server-side)
                         // Keys were already validated when stored in updateCryptor()
                         if let pendingKeys = state.pendingReceiveKeys {
-                            try! state.cryptor?.updateReceiveKeys(pendingKeys)
+                            try state.cryptor?.updateReceiveKeys(pendingKeys)
                             state.pendingReceiveKeys = nil
                         }
                     }
@@ -595,15 +595,15 @@ public final class TLSConnection: Sendable {
 
         // Early data keys go to a separate cryptor to preserve handshake keys
         if info.level == .earlyData {
-            sharedState.withLock { state in
+            try sharedState.withLock { state in
                 let earlyDataCryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
                 if let keys = sendKeys {
                     // Keys already validated above
-                    try! earlyDataCryptor.updateSendKeys(keys)
+                    try earlyDataCryptor.updateSendKeys(keys)
                 }
                 if let keys = receiveKeys {
                     // Keys already validated above
-                    try! earlyDataCryptor.updateReceiveKeys(keys)
+                    try earlyDataCryptor.updateReceiveKeys(keys)
                 }
                 state.earlyDataCryptor = earlyDataCryptor
             }
@@ -615,7 +615,7 @@ public final class TLSConnection: Sendable {
             info.level == .application && !handler.isClient && !state.handshakeCompleted
         }
 
-        sharedState.withLock { state in
+        try sharedState.withLock { state in
             // Ensure cryptor exists
             if state.cryptor == nil {
                 state.cryptor = TLSRecordCryptor(cipherSuite: info.cipherSuite)
@@ -624,7 +624,7 @@ public final class TLSConnection: Sendable {
 
             // Update send keys if available (already validated)
             if let keys = sendKeys {
-                try! state.cryptor?.updateSendKeys(keys)
+                try state.cryptor?.updateSendKeys(keys)
             }
 
             // Update receive keys if available (already validated)
@@ -635,7 +635,7 @@ public final class TLSConnection: Sendable {
                     // Post-handshake key updates (handshakeCompleted == true) apply immediately.
                     state.pendingReceiveKeys = keys
                 } else {
-                    try! state.cryptor?.updateReceiveKeys(keys)
+                    try state.cryptor?.updateReceiveKeys(keys)
                 }
             }
         }

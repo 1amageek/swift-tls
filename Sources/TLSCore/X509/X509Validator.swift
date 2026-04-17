@@ -237,18 +237,31 @@ public struct X509Validator: Sendable {
 
             // Try each candidate's signature; pick the first that verifies
             var selectedIssuer: X509Certificate?
+            var firstVerificationError: X509Error?
             for candidate in candidates {
                 // Prevent cycles
                 if chain.contains(where: { $0.subject == candidate.subject && $0.serialNumber == candidate.serialNumber }) {
                     continue
                 }
-                if (try? verifySignature(of: current, signedBy: candidate)) != nil {
+                do {
+                    try verifySignature(of: current, signedBy: candidate)
                     selectedIssuer = candidate
                     break
+                } catch let error as X509Error {
+                    if firstVerificationError == nil {
+                        firstVerificationError = error
+                    }
+                } catch {
+                    if firstVerificationError == nil {
+                        firstVerificationError = .signatureVerificationFailed(error.localizedDescription)
+                    }
                 }
             }
 
             guard let issuer = selectedIssuer else {
+                if let firstVerificationError {
+                    throw firstVerificationError
+                }
                 throw X509Error.issuerNotFound(issuer: current.issuer.string)
             }
 

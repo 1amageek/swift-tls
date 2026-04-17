@@ -58,7 +58,7 @@ public struct DTLSCertificate: Sendable {
                     BasicConstraints.notCertificateAuthority
                 )
                 Critical(
-                    try KeyUsage(digitalSignature: true)
+                    KeyUsage(digitalSignature: true)
                 )
             },
             issuerPrivateKey: .init(privateKey)

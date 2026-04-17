@@ -463,8 +463,17 @@ public struct RevocationChecker: Sendable {
     private func loadCachedCRL(from directory: URL, for url: URL) -> CRL? {
         let cacheFile = directory.appendingPathComponent(url.absoluteString.data(using: .utf8)!.base64EncodedString())
 
-        guard let data = try? Data(contentsOf: cacheFile),
-              let crl = try? CRL.parse(from: data) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: cacheFile)
+        } catch {
+            return nil
+        }
+
+        let crl: CRL
+        do {
+            crl = try CRL.parse(from: data)
+        } catch {
             return nil
         }
 
@@ -478,7 +487,11 @@ public struct RevocationChecker: Sendable {
 
     private func saveCRLToCache(_ data: Data, to directory: URL, for url: URL) {
         let cacheFile = directory.appendingPathComponent(url.absoluteString.data(using: .utf8)!.base64EncodedString())
-        try? data.write(to: cacheFile)
+        do {
+            try data.write(to: cacheFile)
+        } catch {
+            assertionFailure("Failed to write cached CRL: \(error)")
+        }
     }
 
     private func checkCertificateInCRL(_ certificate: X509Certificate, crl: CRL) -> RevocationStatus {
@@ -654,8 +667,11 @@ struct BasicOCSPResponse: Sendable {
 
         var singleResponses: [SingleResponse] = []
         for child in tbsResponseData.children[index].children {
-            if let singleResponse = try? parseSingleResponse(child) {
+            do {
+                let singleResponse = try parseSingleResponse(child)
                 singleResponses.append(singleResponse)
+            } catch {
+                continue
             }
         }
 
@@ -685,7 +701,11 @@ struct BasicOCSPResponse: Sendable {
             let revocationTime = try certStatusValue.children[0].asGeneralizedTime()
             var reason: UInt8? = nil
             if certStatusValue.children.count > 1 {
-                reason = try? certStatusValue.children[1].asEnumerated()
+                do {
+                    reason = try certStatusValue.children[1].asEnumerated()
+                } catch {
+                    reason = nil
+                }
             }
             certStatus = .revoked(SingleResponse.RevokedInfo(
                 revocationTime: revocationTime,
@@ -774,9 +794,12 @@ struct CRL: Sendable {
         // Parse nextUpdate (optional)
         var nextUpdate = Date.distantFuture
         if index < tbsCertList.children.count {
-            if let time = try? tbsCertList.children[index].asTime() {
+            do {
+                let time = try tbsCertList.children[index].asTime()
                 nextUpdate = time
                 index += 1
+            } catch {
+                // nextUpdate is optional
             }
         }
 
@@ -784,8 +807,11 @@ struct CRL: Sendable {
         var revokedCertificates: [RevokedCertificate] = []
         if index < tbsCertList.children.count && tbsCertList.children[index].tag.isSequence {
             for entry in tbsCertList.children[index].children {
-                if let revoked = try? parseRevokedCertificate(entry) {
+                do {
+                    let revoked = try parseRevokedCertificate(entry)
                     revokedCertificates.append(revoked)
+                } catch {
+                    continue
                 }
             }
         }
@@ -814,13 +840,15 @@ struct CRL: Sendable {
             if extensions.tag.isSequence {
                 for ext in extensions.children {
                     if ext.tag.isSequence && ext.children.count >= 2 {
-                        if let oid = try? ext.children[0].asObjectIdentifier(),
-                           oid.dotNotation == "2.5.29.21" {  // CRL Reason Code
-                            if let reasonData = try? ext.children[1].asOctetString(),
-                               let reasonValue = try? ASN1Parser.parseOne(from: reasonData),
-                               let enumValue = try? reasonValue.asEnumerated() {
-                                reason = RevocationReason(rawValue: enumValue)
-                            }
+                        do {
+                            let oid = try ext.children[0].asObjectIdentifier()
+                            guard oid.dotNotation == "2.5.29.21" else { continue }
+                            let reasonData = try ext.children[1].asOctetString()
+                            let reasonValue = try ASN1Parser.parseOne(from: reasonData)
+                            let enumValue = try reasonValue.asEnumerated()
+                            reason = RevocationReason(rawValue: enumValue)
+                        } catch {
+                            continue
                         }
                     }
                 }
@@ -841,7 +869,13 @@ extension X509Certificate {
     /// Gets the OCSP responder URL from Authority Information Access extension
     func getOCSPResponderURL() -> URL? {
         // Use swift-certificates' authorityInformationAccess property
-        guard let aia = try? certificate.extensions.authorityInformationAccess else {
+        let aia: AuthorityInformationAccess
+        do {
+            guard let access = try certificate.extensions.authorityInformationAccess else {
+                return nil
+            }
+            aia = access
+        } catch {
             return nil
         }
 
@@ -871,8 +905,14 @@ extension X509Certificate {
         //     accessLocation GeneralName
         // }
 
-        guard let value = try? ASN1Parser.parseOne(from: data),
-              value.tag.isSequence else {
+        let value: ASN1Value
+        do {
+            value = try ASN1Parser.parseOne(from: data)
+        } catch {
+            return nil
+        }
+
+        guard value.tag.isSequence else {
             return nil
         }
 
@@ -881,15 +921,18 @@ extension X509Certificate {
                 continue
             }
 
-            let method = try? accessDesc.children[0].asObjectIdentifier()
-            // OCSP method OID: 1.3.6.1.5.5.7.48.1
-            if method?.dotNotation == "1.3.6.1.5.5.7.48.1" {
-                let location = accessDesc.children[1]
-                // GeneralName uniformResourceIdentifier [6] IA5String
-                if location.tag.tagClass == .contextSpecific && location.tag.tagNumber == 6 {
-                    if let urlString = String(data: location.content, encoding: .ascii) {
-                        return URL(string: urlString)
-                    }
+            do {
+                let method = try accessDesc.children[0].asObjectIdentifier()
+                guard method.dotNotation == "1.3.6.1.5.5.7.48.1" else { continue }
+            } catch {
+                continue
+            }
+
+            let location = accessDesc.children[1]
+            // GeneralName uniformResourceIdentifier [6] IA5String
+            if location.tag.tagClass == .contextSpecific && location.tag.tagNumber == 6 {
+                if let urlString = String(data: location.content, encoding: .ascii) {
+                    return URL(string: urlString)
                 }
             }
         }
@@ -900,8 +943,14 @@ extension X509Certificate {
     private func parseCDPForURL(_ data: Data) -> URL? {
         // CRLDistributionPoints ::= SEQUENCE SIZE (1..MAX) OF DistributionPoint
 
-        guard let value = try? ASN1Parser.parseOne(from: data),
-              value.tag.isSequence else {
+        let value: ASN1Value
+        do {
+            value = try ASN1Parser.parseOne(from: data)
+        } catch {
+            return nil
+        }
+
+        guard value.tag.isSequence else {
             return nil
         }
 

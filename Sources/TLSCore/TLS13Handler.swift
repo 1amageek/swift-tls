@@ -861,7 +861,8 @@ public final class ServerStateMachine: Sendable {
                     pskKeySchedule.deriveEarlySecret(psk: psk)
 
                     // Validate binder
-                    if let binderKey = try? pskKeySchedule.deriveBinderKey(isResumption: true) {
+                    do {
+                        let binderKey = try pskKeySchedule.deriveBinderKey(isResumption: true)
                         let helper = PSKBinderHelper(cipherSuite: session.cipherSuite)
                         // Use cipher suite's hash algorithm (SHA-256 or SHA-384)
                         let transcriptHash = session.cipherSuite.transcriptHash(of: truncatedTranscript)
@@ -875,6 +876,8 @@ public final class ServerStateMachine: Sendable {
                             pskValidationResult = .valid(index: UInt16(index), session: session, psk: psk)
                             break
                         }
+                    } catch {
+                        continue
                     }
                 }
             }
@@ -908,12 +911,13 @@ public final class ServerStateMachine: Sendable {
 
                         // Derive client early traffic secret (RFC 8446 Section 7.1)
                         let earlyTranscript = state.context.transcriptHash.currentHash()
-                        if let earlyTrafficSecret = try? state.context.keySchedule.deriveClientEarlyTrafficSecret(
-                            transcriptHash: earlyTranscript
-                        ) {
+                        do {
+                            let earlyTrafficSecret = try state.context.keySchedule.deriveClientEarlyTrafficSecret(
+                                transcriptHash: earlyTranscript
+                            )
                             state.context.clientEarlyTrafficSecret = earlyTrafficSecret
                             state.context.earlyDataState.clientEarlyTrafficSecret = earlyTrafficSecret
-                        } else {
+                        } catch {
                             // Early traffic secret derivation failed - explicitly reject early data
                             state.context.earlyDataState.earlyDataAccepted = false
                         }
