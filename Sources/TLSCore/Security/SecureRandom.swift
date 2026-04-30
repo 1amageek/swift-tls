@@ -1,11 +1,10 @@
 /// Secure Random Number Generation
 ///
-/// Wraps the system CSPRNG (SecRandomCopyBytes) with error checking.
-/// All cryptographic random generation in the project should use this
-/// function instead of calling SecRandomCopyBytes directly.
+/// Wraps Swift Crypto's secure random key generation.
+/// All cryptographic random generation in the project should use this function.
 
+import Crypto
 import Foundation
-import Security
 
 /// Generate cryptographically secure random bytes.
 ///
@@ -13,26 +12,32 @@ import Security
 /// - Returns: Data containing `count` cryptographically secure random bytes
 /// - Throws: If the system CSPRNG fails (e.g., entropy exhaustion)
 public func secureRandomBytes(count: Int) throws -> Data {
-    var bytes = Data(count: count)
-    let status = bytes.withUnsafeMutableBytes { ptr in
-        SecRandomCopyBytes(kSecRandomDefault, count, ptr.baseAddress!)
+    guard count >= 0 else {
+        throw TLSInternalError.invalidByteCount(count)
     }
-    guard status == errSecSuccess else {
-        throw TLSInternalError.randomGenerationFailed(status: status)
+    guard count <= Int.max / 8 else {
+        throw TLSInternalError.invalidByteCount(count)
     }
-    return bytes
+    guard count > 0 else {
+        return Data()
+    }
+
+    let key = SymmetricKey(size: SymmetricKeySize(bitCount: count * 8))
+    return key.withUnsafeBytes { bytes in
+        Data(bytes)
+    }
 }
 
 /// Internal error for secure random generation failure
 public enum TLSInternalError: Error, Sendable {
-    case randomGenerationFailed(status: OSStatus)
+    case invalidByteCount(Int)
 }
 
 extension TLSInternalError: CustomStringConvertible {
     public var description: String {
         switch self {
-        case .randomGenerationFailed(let status):
-            return "SecRandomCopyBytes failed with status \(status)"
+        case .invalidByteCount(let count):
+            return "Invalid secure random byte count: \(count)"
         }
     }
 }
