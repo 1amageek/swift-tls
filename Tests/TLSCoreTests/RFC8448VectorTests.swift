@@ -26,16 +26,16 @@ struct RFC8448VectorTests {
     }
 
     /// Create a deterministic shared secret via X25519 key agreement using fixed key material
-    private func makeSharedSecret() throws -> SharedSecret {
+    private func makeSharedSecret() throws -> KeyExchangeSecret {
         let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
         let serverPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-        return try clientPrivateKey.sharedSecretFromKeyAgreement(with: serverPrivateKey.publicKey)
+        return KeyExchangeSecret(try clientPrivateKey.sharedSecretFromKeyAgreement(with: serverPrivateKey.publicKey))
     }
 
     /// Advance a key schedule through early + handshake phases, returning handshake secrets
     private func advanceThroughHandshake(
         keySchedule: inout TLSKeySchedule,
-        sharedSecret: SharedSecret,
+        sharedSecret: KeyExchangeSecret,
         hsTranscriptHash: Data
     ) throws -> (client: SymmetricKey, server: SymmetricKey) {
         keySchedule.deriveEarlySecret(psk: nil)
@@ -48,7 +48,7 @@ struct RFC8448VectorTests {
     /// Advance a key schedule through early + handshake + application phases
     private func advanceThroughApplication(
         keySchedule: inout TLSKeySchedule,
-        sharedSecret: SharedSecret,
+        sharedSecret: KeyExchangeSecret,
         hsTranscriptHash: Data,
         appTranscriptHash: Data
     ) throws -> (
@@ -337,9 +337,9 @@ struct RFC8448VectorTests {
         // handshake secrets, which implies the intermediate "derived" secret is deterministic.
         let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
         let serverPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-        let sharedSecret = try clientPrivateKey.sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try clientPrivateKey.sharedSecretFromKeyAgreement(
             with: serverPrivateKey.publicKey
-        )
+        ))
         let transcriptHash = Data(SHA256.hash(data: Data("deterministic test".utf8)))
 
         var ks1 = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
@@ -475,9 +475,9 @@ struct RFC8448PropertyTests {
         var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
         let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
         let serverPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-        let sharedSecret = try clientPrivateKey.sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try clientPrivateKey.sharedSecretFromKeyAgreement(
             with: serverPrivateKey.publicKey
-        )
+        ))
         let transcript = Data(repeating: 0xAA, count: 32)
 
         _ = try keySchedule.deriveHandshakeSecrets(
@@ -566,9 +566,9 @@ struct RFC8448PropertyTests {
         var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
         let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
         let serverPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-        let sharedSecret = try clientPrivateKey.sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try clientPrivateKey.sharedSecretFromKeyAgreement(
             with: serverPrivateKey.publicKey
-        )
+        ))
 
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: sharedSecret,
@@ -606,9 +606,9 @@ struct RFC8448PropertyTests {
         var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
         let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
         let serverPrivateKey = Curve25519.KeyAgreement.PrivateKey()
-        let sharedSecret = try clientPrivateKey.sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try clientPrivateKey.sharedSecretFromKeyAgreement(
             with: serverPrivateKey.publicKey
-        )
+        ))
 
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: sharedSecret,
@@ -752,9 +752,9 @@ struct RFC8448KnownAnswerTests {
         let serverPriv = try Curve25519.KeyAgreement.PrivateKey(
             rawRepresentation: dataFromHex(serverPrivateKeyHex)
         )
-        let sharedSecret = try clientPriv.sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try clientPriv.sharedSecretFromKeyAgreement(
             with: serverPriv.publicKey
-        )
+        ))
 
         // Use the known transcript hash from RFC 8448
         let transcriptHash = dataFromHex(chShTranscriptHashHex)

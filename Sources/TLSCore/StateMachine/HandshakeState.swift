@@ -113,6 +113,10 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
     /// Client certificate required but not provided
     case certificateRequired
 
+    /// No common certificate type, or peer used a type that was not
+    /// negotiated (RFC 7250)
+    case unsupportedCertificateType(String)
+
     /// Decode error (malformed message)
     case decodeError(String)
 
@@ -132,6 +136,7 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
         case (.decryptionFailed, .decryptionFailed): return true
         case (.internalError(let l), .internalError(let r)): return l == r
         case (.certificateRequired, .certificateRequired): return true
+        case (.unsupportedCertificateType(let l), .unsupportedCertificateType(let r)): return l == r
         case (.decodeError(let l), .decodeError(let r)): return l == r
         default: return false
         }
@@ -168,6 +173,8 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
             return TLSAlert(description: .internalError)
         case .certificateRequired:
             return TLSAlert(description: .certificateRequired)
+        case .unsupportedCertificateType:
+            return TLSAlert(description: .unsupportedCertificate)
         case .decodeError:
             return TLSAlert(description: .decodeError)
         }
@@ -188,7 +195,7 @@ public struct HandshakeContext: Sendable {
     public var keyExchange: KeyExchange?
 
     /// The shared secret from key agreement
-    public var sharedSecret: SharedSecret?
+    public var sharedSecret: KeyExchangeSecret?
 
     /// The transcript hash
     public var transcriptHash: TranscriptHash
@@ -324,6 +331,14 @@ public struct HandshakeContext: Sendable {
     /// Stores the return value from `TLSConfiguration.certificateValidator`.
     /// For libp2p, this would be the peer's `PeerID`.
     public var validatedPeerInfo: (any Sendable)?
+
+    // MARK: - Raw Public Key (RFC 7250) State
+
+    /// Negotiated format of the server's certificate (default: X.509).
+    public var negotiatedServerCertificateType: CertificateType = .x509
+
+    /// Negotiated format of the client's certificate (default: X.509).
+    public var negotiatedClientCertificateType: CertificateType = .x509
 
     public init() {
         self.transcriptHash = TranscriptHash()

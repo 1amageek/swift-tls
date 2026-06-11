@@ -18,6 +18,8 @@ public enum TLSExtensionType: UInt16, Sendable {
     case supportedGroups = 10               // Supported elliptic curves
     case signatureAlgorithms = 13           // Supported signature algorithms
     case alpn = 16                          // Application-Layer Protocol Negotiation
+    case clientCertificateType = 19         // Raw Public Key (RFC 7250)
+    case serverCertificateType = 20         // Raw Public Key (RFC 7250)
     case preSharedKey = 41                  // Pre-shared key
     case earlyData = 42                     // Early data (0-RTT)
     case supportedVersions = 43             // TLS versions supported
@@ -56,6 +58,8 @@ public enum TLSExtension: Sendable {
     case supportedGroups(SupportedGroupsExtension)
     case signatureAlgorithms(SignatureAlgorithmsExtension)
     case alpn(ALPNExtension)
+    case clientCertificateType(ClientCertificateTypeExtension)
+    case serverCertificateType(ServerCertificateTypeExtension)
     case preSharedKey(PreSharedKeyExtension)
     case earlyData(EarlyDataExtension)
     case supportedVersions(SupportedVersionsExtension)
@@ -73,6 +77,8 @@ public enum TLSExtension: Sendable {
         case .supportedGroups: return .supportedGroups
         case .signatureAlgorithms: return .signatureAlgorithms
         case .alpn: return .alpn
+        case .clientCertificateType: return .clientCertificateType
+        case .serverCertificateType: return .serverCertificateType
         case .preSharedKey: return .preSharedKey
         case .earlyData: return .earlyData
         case .supportedVersions: return .supportedVersions
@@ -90,6 +96,8 @@ public enum TLSExtension: Sendable {
         case .supportedGroups: return TLSExtensionType.supportedGroups.rawValue
         case .signatureAlgorithms: return TLSExtensionType.signatureAlgorithms.rawValue
         case .alpn: return TLSExtensionType.alpn.rawValue
+        case .clientCertificateType: return TLSExtensionType.clientCertificateType.rawValue
+        case .serverCertificateType: return TLSExtensionType.serverCertificateType.rawValue
         case .preSharedKey: return TLSExtensionType.preSharedKey.rawValue
         case .earlyData: return TLSExtensionType.earlyData.rawValue
         case .supportedVersions: return TLSExtensionType.supportedVersions.rawValue
@@ -107,6 +115,8 @@ public enum TLSExtension: Sendable {
         case .supportedGroups(let v): return v
         case .signatureAlgorithms(let v): return v
         case .alpn(let v): return v
+        case .clientCertificateType(let v): return v
+        case .serverCertificateType(let v): return v
         case .preSharedKey(let v): return v
         case .earlyData(let v): return v
         case .supportedVersions(let v): return v
@@ -127,6 +137,8 @@ public enum TLSExtension: Sendable {
         case .supportedGroups(let ext): extensionData = ext.encode()
         case .signatureAlgorithms(let ext): extensionData = ext.encode()
         case .alpn(let ext): extensionData = ext.encode()
+        case .clientCertificateType(let ext): extensionData = ext.encode()
+        case .serverCertificateType(let ext): extensionData = ext.encode()
         case .preSharedKey(let ext): extensionData = ext.encode()
         case .earlyData(let ext): extensionData = ext.encode()
         case .supportedVersions(let ext): extensionData = ext.encode()
@@ -214,6 +226,22 @@ public enum TLSExtension: Sendable {
             return .transportParameters(data)
 
         // Context-dependent extensions:
+        case .clientCertificateType:
+            switch context {
+            case .encryptedExtensions:
+                return .clientCertificateType(try ClientCertificateTypeExtension.decodeSelected(from: data))
+            default:
+                return .clientCertificateType(try ClientCertificateTypeExtension.decodeOffered(from: data))
+            }
+
+        case .serverCertificateType:
+            switch context {
+            case .encryptedExtensions:
+                return .serverCertificateType(try ServerCertificateTypeExtension.decodeSelected(from: data))
+            default:
+                return .serverCertificateType(try ServerCertificateTypeExtension.decodeOffered(from: data))
+            }
+
         case .preSharedKey:
             switch context {
             case .serverHello:
@@ -312,6 +340,26 @@ extension TLSExtension {
     /// Create a pre_shared_key extension for ServerHello
     public static func preSharedKeyServer(selectedIdentity: UInt16) -> TLSExtension {
         .preSharedKey(.serverHello(SelectedPsk(selectedIdentity: selectedIdentity)))
+    }
+
+    /// Create a client_certificate_type extension for ClientHello
+    public static func clientCertificateTypes(_ types: [CertificateType]) -> TLSExtension {
+        .clientCertificateType(.offered(types))
+    }
+
+    /// Create a client_certificate_type extension for EncryptedExtensions
+    public static func clientCertificateTypeSelected(_ type: CertificateType) -> TLSExtension {
+        .clientCertificateType(.selected(type))
+    }
+
+    /// Create a server_certificate_type extension for ClientHello
+    public static func serverCertificateTypes(_ types: [CertificateType]) -> TLSExtension {
+        .serverCertificateType(.offered(types))
+    }
+
+    /// Create a server_certificate_type extension for EncryptedExtensions
+    public static func serverCertificateTypeSelected(_ type: CertificateType) -> TLSExtension {
+        .serverCertificateType(.selected(type))
     }
 }
 

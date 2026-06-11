@@ -384,9 +384,9 @@ struct TLSKeySchedulePSKTests {
         keySchedule.deriveEarlySecret(psk: nil)
 
         // Derive handshake secrets with a dummy shared secret
-        let dummySharedSecret = try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
+        let dummySharedSecret = KeyExchangeSecret(try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
             with: P256.KeyAgreement.PrivateKey().publicKey
-        )
+        ))
         let transcriptHash1 = Data(SHA256.hash(data: Data()))
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: dummySharedSecret,
@@ -414,9 +414,9 @@ struct TLSKeySchedulePSKTests {
         // Go through full key schedule
         keySchedule.deriveEarlySecret(psk: nil)
 
-        let dummySharedSecret = try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
+        let dummySharedSecret = KeyExchangeSecret(try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
             with: P256.KeyAgreement.PrivateKey().publicKey
-        )
+        ))
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: dummySharedSecret,
             transcriptHash: Data(SHA256.hash(data: Data()))

@@ -931,12 +931,13 @@ public final class ServerStateMachine: Sendable {
                 state.context.keySchedule.deriveEarlySecret(psk: nil)
             }
 
-            // Generate server key pair for selected group
-            let serverKeyExchange = try KeyExchange.generate(for: selectedGroup)
-            state.context.keyExchange = serverKeyExchange
-
-            // Perform key agreement
-            let sharedSecret = try serverKeyExchange.sharedSecret(with: peerKeyShareEntry.keyExchange)
+            // Generate server key share and perform key agreement.
+            // KEM-based hybrid groups require encapsulation against the client's
+            // share, so share generation and agreement happen in one step.
+            let (ourShare, sharedSecret) = try KeyExchange.respond(
+                group: selectedGroup,
+                peerShare: peerKeyShareEntry.keyExchange
+            )
             state.context.sharedSecret = sharedSecret
 
             // Negotiate ALPN (RFC 7301 Section 3.2, RFC 8446 Section 4.2.7)
@@ -954,13 +955,60 @@ public final class ServerStateMachine: Sendable {
                 throw TLSHandshakeError.noALPNMatch
             }
 
+            // Negotiate certificate types (RFC 7250).
+            // PSK handshakes carry no Certificate messages, so the
+            // extensions are not negotiated or echoed.
+            let willRequestClientCertificate =
+                !state.context.pskUsed && configuration.requireClientCertificate
+            var echoServerCertificateType = false
+            var echoClientCertificateType = false
+
+            if !state.context.pskUsed {
+                if let offeredTypes = clientHello.serverCertificateTypes {
+                    // Server preference order over the client's offer
+                    guard let selected = configuration.localCertificateTypes
+                        .first(where: { offeredTypes.contains($0) }) else {
+                        throw TLSHandshakeError.unsupportedCertificateType(
+                            "No common server certificate type"
+                        )
+                    }
+                    state.context.negotiatedServerCertificateType = selected
+                    echoServerCertificateType = true
+                } else if !configuration.localCertificateTypes.contains(.x509) {
+                    // We can only present a raw public key but the client
+                    // did not offer to accept one.
+                    throw TLSHandshakeError.unsupportedCertificateType(
+                        "Client did not offer raw_public_key for the server certificate"
+                    )
+                }
+
+                if willRequestClientCertificate {
+                    if let offeredTypes = clientHello.clientCertificateTypes {
+                        guard let selected = configuration.peerCertificateTypes
+                            .first(where: { offeredTypes.contains($0) }) else {
+                            throw TLSHandshakeError.unsupportedCertificateType(
+                                "No common client certificate type"
+                            )
+                        }
+                        state.context.negotiatedClientCertificateType = selected
+                        echoClientCertificateType = true
+                    } else if !configuration.peerCertificateTypes.contains(.x509) {
+                        // We can only accept a raw public key client
+                        // certificate but the client did not offer one.
+                        throw TLSHandshakeError.unsupportedCertificateType(
+                            "Client did not offer raw_public_key for the client certificate"
+                        )
+                    }
+                }
+            }
+
             var messages: [(Data, TLSEncryptionLevel)] = []
             var outputs: [TLSOutput] = []
 
             // Build ServerHello extensions
             var serverHelloExtensions: [TLSExtension] = [
                 .supportedVersionsServer(TLSConstants.version13),
-                .keyShareServer(serverKeyExchange.keyShareEntry())
+                .keyShareServer(KeyShareEntry(group: selectedGroup, keyExchange: ourShare))
             ]
 
             // Add pre_shared_key extension if PSK was accepted
@@ -1008,6 +1056,18 @@ public final class ServerStateMachine: Sendable {
                 eeExtensions.append(.transportParameters(params))
             }
 
+            // Echo negotiated certificate types (RFC 7250 Section 2)
+            if echoServerCertificateType {
+                eeExtensions.append(
+                    .serverCertificateTypeSelected(state.context.negotiatedServerCertificateType)
+                )
+            }
+            if echoClientCertificateType {
+                eeExtensions.append(
+                    .clientCertificateTypeSelected(state.context.negotiatedClientCertificateType)
+                )
+            }
+
             // Add early_data extension if we accepted it (RFC 8446 Section 4.2.10)
             if state.context.earlyDataState.earlyDataAccepted {
                 eeExtensions.append(.earlyData(.encryptedExtensions))
@@ -1031,7 +1091,7 @@ public final class ServerStateMachine: Sendable {
             // Send CertificateRequest if mutual TLS is required (RFC 8446 Section 4.3.2)
             // CertificateRequest is sent after EncryptedExtensions, before Certificate
             // Only for non-PSK handshakes (PSK implies pre-established identity)
-            if !state.context.pskUsed && self.configuration.requireClientCertificate {
+            if willRequestClientCertificate {
                 let certRequest = CertificateRequest.withDefaultSignatureAlgorithms()
                 let crMessage = certRequest.encodeAsHandshake()
                 state.context.transcriptHash.update(with: crMessage)
@@ -1051,14 +1111,27 @@ public final class ServerStateMachine: Sendable {
             // Generate Certificate and CertificateVerify for non-PSK handshakes
             // RFC 8446 Section 4.4.2: Server MUST send Certificate in non-PSK handshakes
             if !state.context.pskUsed {
-                guard let signingKey = self.configuration.signingKey,
-                      let certChain = self.configuration.certificateChain,
-                      !certChain.isEmpty else {
+                guard let signingKey = self.configuration.signingKey else {
                     throw TLSHandshakeError.certificateRequired
                 }
 
+                // Build the certificate payload from the negotiated type.
+                // Raw Public Key (RFC 7250) needs only the signing key;
+                // X.509 needs the configured certificate chain.
+                let serverCertificates: [Data]
+                switch state.context.negotiatedServerCertificateType {
+                case .rawPublicKey:
+                    serverCertificates = [try SubjectPublicKeyInfo.encode(signingKey: signingKey)]
+                case .x509:
+                    guard let certChain = self.configuration.certificateChain,
+                          !certChain.isEmpty else {
+                        throw TLSHandshakeError.certificateRequired
+                    }
+                    serverCertificates = certChain
+                }
+
                 // Generate Certificate message
-                let certificate = Certificate(certificates: certChain)
+                let certificate = Certificate(certificates: serverCertificates)
                 let certMessage = certificate.encodeAsHandshake()
                 state.context.transcriptHash.update(with: certMessage)
                 messages.append((certMessage, .handshake))
@@ -1263,16 +1336,29 @@ public final class ServerStateMachine: Sendable {
             // Store client certificates
             state.context.clientCertificates = certificate.certificates
 
-            // Parse leaf certificate for verification
-            guard let leafCertData = certificate.certificates.first else {
-                throw TLSHandshakeError.certificateVerificationFailed("No leaf certificate")
+            switch state.context.negotiatedClientCertificateType {
+            case .rawPublicKey:
+                // Raw Public Key path (RFC 7250): the single certificate
+                // entry is a DER SubjectPublicKeyInfo. Trust is evaluated
+                // here; CertificateVerify proves possession of the key.
+                let spki = try RawPublicKeyValidator.validate(
+                    certificate: certificate,
+                    configuration: configuration
+                )
+                state.context.clientVerificationKey = spki.verificationKey
+
+            case .x509:
+                // Parse leaf certificate for verification
+                guard let leafCertData = certificate.certificates.first else {
+                    throw TLSHandshakeError.certificateVerificationFailed("No leaf certificate")
+                }
+
+                let leafCert = try X509Certificate.parse(from: leafCertData)
+                state.context.clientCertificate = leafCert
+
+                // Extract verification key from certificate
+                state.context.clientVerificationKey = try leafCert.extractPublicKey()
             }
-
-            let leafCert = try X509Certificate.parse(from: leafCertData)
-            state.context.clientCertificate = leafCert
-
-            // Extract verification key from certificate
-            state.context.clientVerificationKey = try leafCert.extractPublicKey()
 
             // Update transcript
             let message = HandshakeCodec.encode(type: .certificate, content: data)
@@ -1339,7 +1425,9 @@ public final class ServerStateMachine: Sendable {
 
             // Perform X.509 chain validation for client certificate (mTLS)
             // Skip if expectedPeerPublicKey is set (raw public key verification mode)
-            if configuration.verifyPeer && configuration.expectedPeerPublicKey == nil {
+            // or if Raw Public Key was negotiated (trust evaluated at Certificate time)
+            if configuration.verifyPeer && configuration.expectedPeerPublicKey == nil
+                && state.context.negotiatedClientCertificateType == .x509 {
                 guard let leafCert = state.context.clientCertificate else {
                     throw TLSHandshakeError.certificateVerificationFailed("Missing client certificate")
                 }

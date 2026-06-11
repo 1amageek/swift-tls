@@ -242,9 +242,9 @@ struct PSKEndToEndTests {
         var keySchedule = TLSKeySchedule(cipherSuite: cipherSuite)
         keySchedule.deriveEarlySecret(psk: nil)
 
-        let sharedSecret = try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
             with: P256.KeyAgreement.PrivateKey().publicKey
-        )
+        ))
         let transcriptHash1 = Data(SHA256.hash(data: Data()))
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: sharedSecret,
@@ -488,9 +488,9 @@ struct PSKEndToEndTests {
         var keySchedule = TLSKeySchedule(cipherSuite: .tls_aes_128_gcm_sha256)
         keySchedule.deriveEarlySecret(psk: nil)
 
-        let sharedSecret = try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
+        let sharedSecret = KeyExchangeSecret(try P256.KeyAgreement.PrivateKey().sharedSecretFromKeyAgreement(
             with: P256.KeyAgreement.PrivateKey().publicKey
-        )
+        ))
         _ = try keySchedule.deriveHandshakeSecrets(
             sharedSecret: sharedSecret,
             transcriptHash: Data(SHA256.hash(data: Data()))

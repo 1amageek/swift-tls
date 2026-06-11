@@ -24,7 +24,7 @@ struct KeyScheduleTests {
         // Create a shared secret via key agreement
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
 
         let transcriptHash = Data(repeating: 0xAA, count: 32)
 
@@ -44,7 +44,7 @@ struct KeyScheduleTests {
         // First derive handshake secrets
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
         let hsTranscript = Data(repeating: 0xAA, count: 32)
 
         _ = try keySchedule.deriveHandshakeSecrets(
@@ -126,7 +126,7 @@ struct KeyScheduleTests {
     func deterministicDerivation() throws {
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
         let transcriptHash = Data(repeating: 0xAA, count: 32)
 
         var keySchedule1 = TLSKeySchedule()
@@ -155,7 +155,7 @@ struct KeyScheduleTests {
     func differentTranscripts() throws {
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
 
         var keySchedule1 = TLSKeySchedule()
         let (client1, _) = try keySchedule1.deriveHandshakeSecrets(
@@ -232,7 +232,7 @@ struct KeyScheduleTests {
         // P-384 shared secret for SHA-384 cipher suite
         let privateKey = P384.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
 
         let transcriptHash = Data(repeating: 0xAA, count: 48)
 
@@ -251,7 +251,7 @@ struct KeyScheduleTests {
 
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
         let hsTranscript = Data(repeating: 0xAA, count: 32)
 
         _ = try keySchedule.deriveHandshakeSecrets(
@@ -279,7 +279,7 @@ struct KeyScheduleTests {
 
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
         let hsTranscript = Data(repeating: 0xAA, count: 32)
 
         _ = try keySchedule.deriveHandshakeSecrets(
@@ -331,7 +331,7 @@ struct KeyScheduleTests {
 
         let privateKey = Curve25519.KeyAgreement.PrivateKey()
         let publicKey = privateKey.publicKey
-        let sharedSecret = try privateKey.sharedSecretFromKeyAgreement(with: publicKey)
+        let sharedSecret = KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: publicKey))
         let hsTranscript = Data(repeating: 0xAA, count: 32)
 
         _ = try keySchedule.deriveHandshakeSecrets(

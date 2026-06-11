@@ -168,7 +168,7 @@ public struct TLSKeySchedule: Sendable {
     ///   - transcriptHash: Hash of ClientHello...ServerHello
     /// - Returns: (client_handshake_traffic_secret, server_handshake_traffic_secret)
     public mutating func deriveHandshakeSecrets(
-        sharedSecret: SharedSecret,
+        sharedSecret: KeyExchangeSecret,
         transcriptHash: Data
     ) throws -> (client: SymmetricKey, server: SymmetricKey) {
         // Ensure we have early secret

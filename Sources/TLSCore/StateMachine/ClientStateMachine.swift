@@ -100,6 +100,15 @@ public final class ClientStateMachine: Sendable {
                 extensions.append(.transportParameters(params))
             }
 
+            // Raw Public Key certificate types (RFC 7250).
+            // Only offered when configured beyond the X.509 default.
+            if configuration.localCertificateTypes != [.x509] {
+                extensions.append(.clientCertificateTypes(configuration.localCertificateTypes))
+            }
+            if configuration.peerCertificateTypes != [.x509] {
+                extensions.append(.serverCertificateTypes(configuration.peerCertificateTypes))
+            }
+
             // Build the cipher suites list (from configuration)
             var cipherSuites: [CipherSuite] = configuration.supportedCipherSuites
 
@@ -482,6 +491,15 @@ public final class ClientStateMachine: Sendable {
             extensions.append(.transportParameters(params))
         }
 
+        // Raw Public Key certificate types (RFC 7250).
+        // Only offered when configured beyond the X.509 default.
+        if state.configuration.localCertificateTypes != [.x509] {
+            extensions.append(.clientCertificateTypes(state.configuration.localCertificateTypes))
+        }
+        if state.configuration.peerCertificateTypes != [.x509] {
+            extensions.append(.serverCertificateTypes(state.configuration.peerCertificateTypes))
+        }
+
         // Build ClientHello2
         guard let clientRandom = state.context.clientRandom,
               let sessionID = state.context.sessionID else {
@@ -604,6 +622,42 @@ public final class ClientStateMachine: Sendable {
                 state.context.peerTransportParameters = params
             }
 
+            // Validate Raw Public Key negotiation (RFC 7250)
+            if let selectedType = encryptedExtensions.selectedServerCertificateType {
+                guard state.configuration.peerCertificateTypes != [.x509] else {
+                    throw TLSHandshakeError.invalidExtension(
+                        "Server sent server_certificate_type but client did not offer it"
+                    )
+                }
+                guard state.configuration.peerCertificateTypes.contains(selectedType) else {
+                    throw TLSHandshakeError.unsupportedCertificateType(
+                        "Server selected a server certificate type the client did not offer"
+                    )
+                }
+                state.context.negotiatedServerCertificateType = selectedType
+            } else if !state.context.pskUsed,
+                      !state.configuration.peerCertificateTypes.contains(.x509) {
+                // We cannot validate X.509 and the server did not agree to
+                // send a raw public key.
+                throw TLSHandshakeError.unsupportedCertificateType(
+                    "Server did not select raw_public_key and X.509 is not enabled"
+                )
+            }
+
+            if let selectedType = encryptedExtensions.selectedClientCertificateType {
+                guard state.configuration.localCertificateTypes != [.x509] else {
+                    throw TLSHandshakeError.invalidExtension(
+                        "Server sent client_certificate_type but client did not offer it"
+                    )
+                }
+                guard state.configuration.localCertificateTypes.contains(selectedType) else {
+                    throw TLSHandshakeError.unsupportedCertificateType(
+                        "Server selected a client certificate type the client did not offer"
+                    )
+                }
+                state.context.negotiatedClientCertificateType = selectedType
+            }
+
             // Check for early_data acceptance
             let earlyDataAccepted = encryptedExtensions.extensions.contains {
                 $0.extensionType == .earlyData
@@ -690,6 +744,23 @@ public final class ClientStateMachine: Sendable {
 
             // Store raw certificates
             state.context.peerCertificates = certificate.certificates
+
+            // Raw Public Key path (RFC 7250): the single certificate entry
+            // is a DER SubjectPublicKeyInfo, not an X.509 certificate.
+            if state.context.negotiatedServerCertificateType == .rawPublicKey {
+                let spki = try RawPublicKeyValidator.validate(
+                    certificate: certificate,
+                    configuration: state.configuration
+                )
+                state.context.peerVerificationKey = spki.verificationKey
+
+                // Update transcript
+                let message = HandshakeCodec.encode(type: .certificate, content: data)
+                state.context.transcriptHash.update(with: message)
+
+                state.handshakeState = .waitCertificateVerify
+                return []
+            }
 
             // Parse and validate X.509 certificate if verification is enabled
             // Skip X.509 parsing if expectedPeerPublicKey is set (raw public key verification)
@@ -907,15 +978,35 @@ public final class ClientStateMachine: Sendable {
             var clientCertMessages: [Data] = []
 
             if state.context.clientCertificateRequested {
+                // Determine the certificate payload from the negotiated type.
+                // Raw Public Key (RFC 7250) needs only the signing key;
+                // X.509 needs the configured certificate chain.
+                let certificatePayload: [Data]
+                switch state.context.negotiatedClientCertificateType {
+                case .rawPublicKey:
+                    if let signingKey = state.configuration.signingKey {
+                        certificatePayload = [try SubjectPublicKeyInfo.encode(signingKey: signingKey)]
+                    } else {
+                        certificatePayload = []
+                    }
+                case .x509:
+                    if state.configuration.signingKey != nil,
+                       let certChain = state.configuration.certificateChain,
+                       !certChain.isEmpty {
+                        certificatePayload = certChain
+                    } else {
+                        certificatePayload = []
+                    }
+                }
+
                 // Check if client has certificate material configured
                 if let signingKey = state.configuration.signingKey,
-                   let certChain = state.configuration.certificateChain,
-                   !certChain.isEmpty {
+                   !certificatePayload.isEmpty {
 
                     // Send Certificate (with echoed context from CertificateRequest)
                     let certificate = Certificate(
                         certificateRequestContext: state.context.certificateRequestContext,
-                        certificates: certChain
+                        certificates: certificatePayload
                     )
                     let certMessage = certificate.encodeAsHandshake()
                     state.context.transcriptHash.update(with: certMessage)

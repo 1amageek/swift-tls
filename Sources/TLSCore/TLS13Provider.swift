@@ -192,7 +192,16 @@ public struct TLSConfiguration: Sendable {
     public var supportedCipherSuites: [CipherSuite]
 
     /// Supported key exchange groups (in preference order)
-    /// Used by server to select key share group or send HelloRetryRequest
+    ///
+    /// The client generates its key_share for the FIRST group in this list
+    /// and advertises the full list. The server uses it to select the key
+    /// share group or send HelloRetryRequest.
+    ///
+    /// Defaults follow apple/swift-tls: server configurations accept the
+    /// post-quantum hybrid `.x25519MLKEM768` with top preference, while
+    /// client configurations default to classical groups because the hybrid
+    /// client share costs 1216 bytes in the ClientHello. Clients opt in by
+    /// placing `.x25519MLKEM768` first in this list.
     public var supportedGroups: [NamedGroup]
 
     /// Replay protection for 0-RTT early data (server only)
@@ -256,6 +265,32 @@ public struct TLSConfiguration: Sendable {
     ///   when mutual TLS is enabled.
     public var certificateValidator: CertificateValidator?
 
+    // MARK: - Raw Public Key (RFC 7250) Configuration
+
+    /// Certificate types we can present for our own authentication,
+    /// in preference order (default: `[.x509]`).
+    ///
+    /// Include `.rawPublicKey` to authenticate with a bare SubjectPublicKeyInfo
+    /// instead of an X.509 certificate chain. For Raw Public Key authentication,
+    /// only `signingKey` is required; `certificateChain` may be omitted.
+    public var localCertificateTypes: [CertificateType]
+
+    /// Certificate types we accept from the peer, in preference order
+    /// (default: `[.x509]`).
+    ///
+    /// Include `.rawPublicKey` to accept a bare SubjectPublicKeyInfo from
+    /// the peer. When `verifyPeer` is `true`, a raw public key peer must
+    /// match `trustedRawPublicKeys` or `expectedPeerPublicKey`.
+    public var peerCertificateTypes: [CertificateType]
+
+    /// Trusted raw public keys (DER-encoded SubjectPublicKeyInfo) for
+    /// Raw Public Key peer authentication.
+    ///
+    /// RFC 7250 Section 6: raw public keys must be pre-provisioned through
+    /// an out-of-band mechanism. A peer's raw public key is trusted when it
+    /// byte-matches an entry in this list (or `expectedPeerPublicKey`).
+    public var trustedRawPublicKeys: [Data]?
+
     /// Creates a default configuration
     public init() {
         self.alpnProtocols = []
@@ -279,6 +314,9 @@ public struct TLSConfiguration: Sendable {
         self.requireClientCertificate = false
         self.sessionTicketStore = nil
         self.certificateValidator = nil
+        self.localCertificateTypes = [.x509]
+        self.peerCertificateTypes = [.x509]
+        self.trustedRawPublicKeys = nil
     }
 
     /// Creates a client configuration
@@ -292,6 +330,15 @@ public struct TLSConfiguration: Sendable {
         return config
     }
 
+    /// Default server-side key exchange groups.
+    ///
+    /// Matches apple/swift-tls: the post-quantum hybrid group is accepted
+    /// with top preference. Accepting it costs the server nothing unless a
+    /// client actually offers a hybrid key share.
+    public static let defaultServerGroups: [NamedGroup] = [
+        .x25519MLKEM768, .x25519, .secp256r1,
+    ]
+
     /// Creates a server configuration with inline signing key
     public static func server(
         signingKey: any TLSSigningKey,
@@ -304,6 +351,7 @@ public struct TLSConfiguration: Sendable {
         config.certificateChain = certificateChain
         config.alpnProtocols = alpnProtocols
         config.sessionTicketStore = sessionTicketStore
+        config.supportedGroups = defaultServerGroups
         return config
     }
 
@@ -317,6 +365,7 @@ public struct TLSConfiguration: Sendable {
         config.certificatePath = certificatePath
         config.privateKeyPath = privateKeyPath
         config.alpnProtocols = alpnProtocols
+        config.supportedGroups = defaultServerGroups
         return config
     }
 
@@ -339,6 +388,9 @@ public struct TLSConfiguration: Sendable {
         guard !supportedGroups.isEmpty else {
             throw TLSConfigurationError.emptyGroupList
         }
+        guard !localCertificateTypes.isEmpty, !peerCertificateTypes.isEmpty else {
+            throw TLSConfigurationError.emptyCertificateTypeList
+        }
     }
 }
 
@@ -350,4 +402,6 @@ public enum TLSConfigurationError: Error, Sendable {
     case emptyCipherSuiteList
     /// No key exchange groups configured
     case emptyGroupList
+    /// No certificate types configured (RFC 7250)
+    case emptyCertificateTypeList
 }

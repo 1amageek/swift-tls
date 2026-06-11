@@ -94,6 +94,9 @@ public enum NamedGroup: UInt16, Sendable {
     case secp521r1 = 0x0019
     case x25519 = 0x001D
     case x448 = 0x001E
+
+    /// Post-quantum hybrid: X25519 + ML-KEM-768 (draft-ietf-tls-ecdhe-mlkem)
+    case x25519MLKEM768 = 0x11EC
 }
 
 // MARK: - Signature Scheme

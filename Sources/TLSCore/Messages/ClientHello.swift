@@ -245,4 +245,24 @@ public struct ClientHello: Sendable {
         }
         return false
     }
+
+    /// Get offered client certificate types (RFC 7250)
+    public var clientCertificateTypes: [CertificateType]? {
+        for ext in extensions {
+            if case .clientCertificateType(.offered(let types)) = ext {
+                return types
+            }
+        }
+        return nil
+    }
+
+    /// Get offered server certificate types (RFC 7250)
+    public var serverCertificateTypes: [CertificateType]? {
+        for ext in extensions {
+            if case .serverCertificateType(.offered(let types)) = ext {
+                return types
+            }
+        }
+        return nil
+    }
 }

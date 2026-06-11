@@ -49,7 +49,7 @@ public struct EncryptedExtensions: Sendable {
         var extensions: [TLSExtension] = []
         var extReader = TLSReader(data: extensionData)
         while extReader.hasMore {
-            let ext = try TLSExtension.decode(from: &extReader)
+            let ext = try TLSExtension.decode(from: &extReader, context: .encryptedExtensions)
             extensions.append(ext)
         }
 
@@ -91,5 +91,25 @@ public struct EncryptedExtensions: Sendable {
     /// Get server name extension
     public var serverName: ServerNameExtension? {
         findExtension(ServerNameExtension.self)
+    }
+
+    /// Get the selected client certificate type (RFC 7250)
+    public var selectedClientCertificateType: CertificateType? {
+        for ext in extensions {
+            if case .clientCertificateType(.selected(let type)) = ext {
+                return type
+            }
+        }
+        return nil
+    }
+
+    /// Get the selected server certificate type (RFC 7250)
+    public var selectedServerCertificateType: CertificateType? {
+        for ext in extensions {
+            if case .serverCertificateType(.selected(let type)) = ext {
+                return type
+            }
+        }
+        return nil
     }
 }
