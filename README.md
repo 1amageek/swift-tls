@@ -23,7 +23,9 @@ Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certifica
 - HelloRetryRequest
 - PSK / session resumption with 0-RTT early data
 - Mutual TLS (mTLS)
+- The client always verifies the peer's CertificateVerify signature (proof of possession); the `verifyPeer` configuration flag controls **only** X.509 chain / trust-anchor validation, never the handshake signature
 - X.509 certificate chain validation
+- Signature schemes: ECDSA P-256 / P-384 and Ed25519 only — RSA is not advertised or verified (no RSA verifier is implemented)
 - Key Update
 - Transport-agnostic design (TCP, QUIC, etc.)
 - `TLSConnection` and `TLSRecordLayer` accept `DataProtocol` input, which lets adapters feed `ByteBufferView` and similar byte collections without pre-converting to `Data`
@@ -33,8 +35,11 @@ Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certifica
 
 - Full DTLS 1.2 handshake (client and server)
 - Cipher suite: `ECDHE-ECDSA-AES128-GCM-SHA256`
-- Cookie exchange for DoS protection (RFC 6347 §4.2.1)
-- Anti-replay protection with 64-bit sliding window (RFC 6347 §4.1.2.6)
+- Mutual authentication: the server can require and verify a client certificate via `DTLSConnection(certificate:requireClientCertificate:)`; the client's CertificateVerify proof-of-possession is verified before the handshake completes
+- Cookie exchange for DoS protection (RFC 6347 §4.2.1); HelloVerifyRequest cookies are bound to the originating ClientHello and minted/verified with a rotating secret
+- Anti-replay protection with 64-bit sliding window (RFC 6347 §4.1.2.6); bad-MAC records are discarded while datagram processing continues
+- Non-fatal record anomalies (bad MAC, replay, too-old, malformed) are surfaced via `DTLSConnectionOutput.anomalies` instead of being silently swallowed
+- Handshake fragment reassembly is bounded (per-message and concurrent-message limits) to resist memory-exhaustion DoS
 - Epoch-based key management
 - Flight retransmission with exponential backoff
 - Certificate fingerprint verification (WebRTC compatible)
@@ -42,7 +47,7 @@ Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certifica
 ## Requirements
 
 - Swift 6.2+
-- macOS 15+ / iOS 18+ / tvOS 18+ / watchOS 11+ / visionOS 2+
+- macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+
 
 ## Installation
 
@@ -50,7 +55,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-tls.git", from: "0.0.1"),
+    .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.0"),
 ]
 ```
 
@@ -146,7 +151,7 @@ import DTLSRecord
 import DTLSCore
 
 // Create certificate (for client authentication or self-signed)
-let cert = try DTLSCertificate()
+let cert = try DTLSCertificate.generateSelfSigned()
 
 // Create connection
 let dtls = DTLSConnection(certificate: cert)
@@ -186,8 +191,14 @@ try await udp.send(closeNotify)
 import DTLSRecord
 import DTLSCore
 
-let cert = try DTLSCertificate()
-let dtls = DTLSConnection(certificate: cert)
+let cert = try DTLSCertificate.generateSelfSigned()
+
+// Require and verify a client certificate (mutual authentication).
+// When `requireClientCertificate` is true, the server fails the handshake unless
+// the client presents a certificate and proves possession of its private key via
+// a valid CertificateVerify. Peer-authenticated deployments (WebRTC / libp2p)
+// must set this to `true`.
+let dtls = DTLSConnection(certificate: cert, requireClientCertificate: true)
 
 // Server waits for ClientHello
 _ = try dtls.startHandshake(isClient: false)
@@ -252,8 +263,9 @@ DTLSCore
 | §4.1 | Epoch mismatch handling | ✅ Silent discard |
 | §4.1.2.6 | Anti-replay window (64-bit) | ✅ |
 | §4.1.2.6 | MAC verification before window update | ✅ |
-| §4.1.2.7 | Invalid record handling | ✅ Silent discard |
-| §4.2.1 | Cookie exchange (DoS protection) | ✅ |
+| §4.1.2.7 | Invalid record handling | ✅ Discarded (datagram continues; surfaced via `anomalies`) |
+| §4.2.1 | Cookie exchange (DoS protection) | ✅ Cookie bound to ClientHello; rotating secret |
+| §4.2.3 | Handshake fragment reassembly | ✅ Bounded (per-message + concurrent limits) |
 | §4.2.4 | Flight retransmission | ✅ Exponential backoff |
 
 ### TLS 1.2 Alert Protocol (RFC 5246 §7.2)
