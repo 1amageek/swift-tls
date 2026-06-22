@@ -6,7 +6,7 @@
 /// } NamedGroupList;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Supported Groups Extension
 
@@ -30,30 +30,31 @@ public struct SupportedGroupsExtension: Sendable, TLSExtensionValue {
         ])
     }
 
-    public func encode() -> Data {
-        var groupsData = Data(capacity: namedGroups.count * 2)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var groupsData = [UInt8]()
+        groupsData.reserveCapacity(namedGroups.count * 2)
         for group in namedGroups {
             groupsData.append(UInt8((group.rawValue >> 8) & 0xFF))
             groupsData.append(UInt8(group.rawValue & 0xFF))
         }
 
-        var writer = TLSWriter(capacity: 2 + groupsData.count)
-        writer.writeVector16(groupsData)
-        return writer.finish()
+        var writer = ByteWriter(reservingCapacity: 2 + groupsData.count)
+        try writer.wWriteVector16(groupsData)
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> SupportedGroupsExtension {
-        var reader = TLSReader(data: data)
-        let groupsData = try reader.readVector16()
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> SupportedGroupsExtension {
+        var reader = ByteReader(data)
+        let groupsData = try reader.wReadVector16()
 
         guard groupsData.count >= 2 && groupsData.count % 2 == 0 else {
-            throw TLSDecodeError.invalidFormat("Invalid supported groups length")
+            throw .decode(.invalidFormat("Invalid supported groups length"))
         }
 
         var groups: [NamedGroup] = []
-        var groupReader = TLSReader(data: groupsData)
-        while groupReader.hasMore {
-            let value = try groupReader.readUInt16()
+        var groupReader = ByteReader(groupsData)
+        while !groupReader.isAtEnd {
+            let value = try groupReader.wReadUInt16()
             if let group = NamedGroup(rawValue: value) {
                 groups.append(group)
             }

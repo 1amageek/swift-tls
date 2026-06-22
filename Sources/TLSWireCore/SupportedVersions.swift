@@ -14,7 +14,7 @@
 /// } SupportedVersions;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Supported Versions Extension (wrapper)
 
@@ -25,10 +25,10 @@ public enum SupportedVersionsExtension: Sendable, TLSExtensionValue {
 
     public static var extensionType: TLSExtensionType { .supportedVersions }
 
-    public func encode() -> Data {
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
         switch self {
-        case .clientHello(let ext): return ext.encode()
-        case .serverHello(let ext): return ext.encode()
+        case .clientHello(let ext): return try ext.encodeBytes()
+        case .serverHello(let ext): return try ext.encodeBytes()
         }
     }
 
@@ -43,7 +43,7 @@ public enum SupportedVersionsExtension: Sendable, TLSExtensionValue {
     /// The ClientHello variant carries a length-prefixed list while the
     /// ServerHello/HelloRetryRequest variant carries a single 2-byte version.
     /// Requiring the context avoids guessing from the byte length.
-    public static func decode(from data: Data, context: MessageContext) throws -> SupportedVersionsExtension {
+    public static func decode(from data: [UInt8], context: MessageContext) throws(TLSWireError) -> SupportedVersionsExtension {
         switch context {
         case .serverHello:
             return .serverHello(try SupportedVersionsServerHello.decode(from: data))
@@ -66,30 +66,31 @@ public struct SupportedVersionsClientHello: Sendable, TLSExtensionValue {
         self.versions = versions
     }
 
-    public func encode() -> Data {
-        var writer = TLSWriter(capacity: 1 + versions.count * 2)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var writer = ByteWriter(reservingCapacity: 1 + versions.count * 2)
         // versions<2..254> with 1-byte length prefix
-        var versionsData = Data(capacity: versions.count * 2)
+        var versionsData = [UInt8]()
+        versionsData.reserveCapacity(versions.count * 2)
         for version in versions {
             versionsData.append(UInt8((version >> 8) & 0xFF))
             versionsData.append(UInt8(version & 0xFF))
         }
-        writer.writeVector8(versionsData)
-        return writer.finish()
+        try writer.wWriteVector8(versionsData)
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> SupportedVersionsClientHello {
-        var reader = TLSReader(data: data)
-        let versionsData = try reader.readVector8()
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> SupportedVersionsClientHello {
+        var reader = ByteReader(data)
+        let versionsData = try reader.wReadVector8()
 
         guard versionsData.count >= 2 && versionsData.count % 2 == 0 else {
-            throw TLSDecodeError.invalidFormat("Invalid supported versions length")
+            throw TLSWireError.decode(.invalidFormat("Invalid supported versions length"))
         }
 
         var versions: [UInt16] = []
-        var vReader = TLSReader(data: versionsData)
-        while vReader.hasMore {
-            versions.append(try vReader.readUInt16())
+        var vReader = ByteReader(versionsData)
+        while !vReader.isAtEnd {
+            versions.append(try vReader.wReadUInt16())
         }
 
         return SupportedVersionsClientHello(versions: versions)
@@ -114,15 +115,15 @@ public struct SupportedVersionsServerHello: Sendable, TLSExtensionValue {
         self.selectedVersion = selectedVersion
     }
 
-    public func encode() -> Data {
-        var writer = TLSWriter(capacity: 2)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var writer = ByteWriter(reservingCapacity: 2)
         writer.writeUInt16(selectedVersion)
-        return writer.finish()
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> SupportedVersionsServerHello {
-        var reader = TLSReader(data: data)
-        let version = try reader.readUInt16()
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> SupportedVersionsServerHello {
+        var reader = ByteReader(data)
+        let version = try reader.wReadUInt16()
         return SupportedVersionsServerHello(selectedVersion: version)
     }
 

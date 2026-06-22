@@ -8,7 +8,7 @@
 /// } Extension;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Extension Type
 
@@ -44,10 +44,13 @@ public enum MessageContext: Sendable {
 
 // MARK: - Extension Value Protocol
 
-/// Protocol for extension values
+/// Protocol for extension values.
+///
+/// Used as a generic constraint (`some`/`<T: TLSExtensionValue>`), never as an
+/// existential — Embedded Swift forbids `any` values.
 public protocol TLSExtensionValue: Sendable {
     static var extensionType: TLSExtensionType { get }
-    func encode() -> Data
+    func encodeBytes() throws(TLSWireError) -> [UInt8]
 }
 
 // MARK: - TLS Extension Enum
@@ -65,8 +68,8 @@ public enum TLSExtension: Sendable {
     case supportedVersions(SupportedVersionsExtension)
     case pskKeyExchangeModes(PskKeyExchangeModesExtension)
     case keyShare(KeyShareExtension)
-    case transportParameters(Data)
-    case unknown(type: UInt16, data: Data)
+    case transportParameters([UInt8])
+    case unknown(type: UInt16, data: [UInt8])
 
     // MARK: - Properties
 
@@ -108,57 +111,38 @@ public enum TLSExtension: Sendable {
         }
     }
 
-    /// Get the underlying value if it matches the expected type
-    public var value: any TLSExtensionValue {
-        switch self {
-        case .serverName(let v): return v
-        case .supportedGroups(let v): return v
-        case .signatureAlgorithms(let v): return v
-        case .alpn(let v): return v
-        case .clientCertificateType(let v): return v
-        case .serverCertificateType(let v): return v
-        case .preSharedKey(let v): return v
-        case .earlyData(let v): return v
-        case .supportedVersions(let v): return v
-        case .pskKeyExchangeModes(let v): return v
-        case .keyShare(let v): return v
-        case .transportParameters(let data): return TransportParametersExtension(data: data)
-        case .unknown(let type, let data): return UnknownExtension(type: type, data: data)
-        }
-    }
-
     // MARK: - Encoding
 
     /// Encode the extension (type + length + data)
-    public func encode() -> Data {
-        let extensionData: Data
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        let extensionData: [UInt8]
         switch self {
-        case .serverName(let ext): extensionData = ext.encode()
-        case .supportedGroups(let ext): extensionData = ext.encode()
-        case .signatureAlgorithms(let ext): extensionData = ext.encode()
-        case .alpn(let ext): extensionData = ext.encode()
-        case .clientCertificateType(let ext): extensionData = ext.encode()
-        case .serverCertificateType(let ext): extensionData = ext.encode()
-        case .preSharedKey(let ext): extensionData = ext.encode()
-        case .earlyData(let ext): extensionData = ext.encode()
-        case .supportedVersions(let ext): extensionData = ext.encode()
-        case .pskKeyExchangeModes(let ext): extensionData = ext.encode()
-        case .keyShare(let ext): extensionData = ext.encode()
+        case .serverName(let ext): extensionData = try ext.encodeBytes()
+        case .supportedGroups(let ext): extensionData = try ext.encodeBytes()
+        case .signatureAlgorithms(let ext): extensionData = try ext.encodeBytes()
+        case .alpn(let ext): extensionData = try ext.encodeBytes()
+        case .clientCertificateType(let ext): extensionData = try ext.encodeBytes()
+        case .serverCertificateType(let ext): extensionData = try ext.encodeBytes()
+        case .preSharedKey(let ext): extensionData = try ext.encodeBytes()
+        case .earlyData(let ext): extensionData = ext.encodeBytes()
+        case .supportedVersions(let ext): extensionData = try ext.encodeBytes()
+        case .pskKeyExchangeModes(let ext): extensionData = try ext.encodeBytes()
+        case .keyShare(let ext): extensionData = try ext.encodeBytes()
         case .transportParameters(let data): extensionData = data
         case .unknown(_, let data): extensionData = data
         }
 
-        var writer = TLSWriter(capacity: 4 + extensionData.count)
+        var writer = ByteWriter(reservingCapacity: 4 + extensionData.count)
         writer.writeUInt16(rawType)
-        writer.writeVector16(extensionData)
-        return writer.finish()
+        try writer.wWriteVector16(extensionData)
+        return writer.finishArray()
     }
 
     // MARK: - Decoding
 
     /// Decode an extension from a reader with default (ClientHello) context.
     /// Prefer `decode(from:context:)` when the message context is known.
-    public static func decode(from reader: inout TLSReader) throws -> TLSExtension {
+    public static func decode(from reader: inout ByteReader) throws(TLSWireError) -> TLSExtension {
         try decode(from: &reader, context: .clientHello)
     }
 
@@ -169,9 +153,9 @@ public enum TLSExtension: Sendable {
     /// - `supported_versions`: ClientHello (list), ServerHello (single version)
     /// - `pre_shared_key`: ClientHello (offered PSKs), ServerHello (selected identity)
     /// - `early_data`: ClientHello/EE (empty), NewSessionTicket (max_early_data_size)
-    public static func decode(from reader: inout TLSReader, context: MessageContext) throws -> TLSExtension {
-        let type = try reader.readUInt16()
-        let data = try reader.readVector16()
+    public static func decode(from reader: inout ByteReader, context: MessageContext) throws(TLSWireError) -> TLSExtension {
+        let type = try reader.wReadUInt16()
+        let data = try reader.wReadVector16()
 
         guard let extensionType = TLSExtensionType(rawValue: type) else {
             return .unknown(type: type, data: data)
@@ -180,25 +164,25 @@ public enum TLSExtension: Sendable {
         return try decodeWithContext(extensionType: extensionType, data: data, context: context)
     }
 
-    /// Decode multiple extensions from a Data blob with default (ClientHello) context.
-    public static func decodeExtensions(from data: Data) throws -> [TLSExtension] {
+    /// Decode multiple extensions from a byte blob with default (ClientHello) context.
+    public static func decodeExtensions(from data: [UInt8]) throws(TLSWireError) -> [TLSExtension] {
         try decodeExtensions(from: data, context: .clientHello)
     }
 
-    /// Decode multiple extensions from a Data blob with explicit context.
+    /// Decode multiple extensions from a byte blob with explicit context.
     ///
     /// RFC 8446 Section 4.2: "There MUST NOT be more than one extension
     /// of the same type in a given extension block."
-    public static func decodeExtensions(from data: Data, context: MessageContext) throws -> [TLSExtension] {
-        var reader = TLSReader(data: data)
+    public static func decodeExtensions(from data: [UInt8], context: MessageContext) throws(TLSWireError) -> [TLSExtension] {
+        var reader = ByteReader(data)
         var extensions: [TLSExtension] = []
         var seenTypes: Set<UInt16> = []
-        while reader.hasMore {
+        while !reader.isAtEnd {
             let ext = try decode(from: &reader, context: context)
             guard seenTypes.insert(ext.rawType).inserted else {
-                throw TLSHandshakeError.invalidExtension(
+                throw TLSWireError.handshake(.invalidExtension(
                     "Duplicate extension type: 0x\(String(ext.rawType, radix: 16))"
-                )
+                ))
             }
             extensions.append(ext)
         }
@@ -208,9 +192,9 @@ public enum TLSExtension: Sendable {
     /// Core decode logic with message context.
     private static func decodeWithContext(
         extensionType: TLSExtensionType,
-        data: Data,
+        data: [UInt8],
         context: MessageContext
-    ) throws -> TLSExtension {
+    ) throws(TLSWireError) -> TLSExtension {
         switch extensionType {
         case .serverName:
             return .serverName(try ServerNameExtension.decode(from: data))
@@ -366,12 +350,16 @@ extension TLSExtension {
 // MARK: - Unknown Extension
 
 /// Placeholder for unknown extensions
-public struct UnknownExtension: TLSExtensionValue {
-    public static var extensionType: TLSExtensionType { fatalError("Unknown extension has no type") }
+public struct UnknownExtension: Sendable {
     public let type: UInt16
-    public let data: Data
+    public let data: [UInt8]
 
-    public func encode() -> Data { data }
+    public init(type: UInt16, data: [UInt8]) {
+        self.type = type
+        self.data = data
+    }
+
+    public func encodeBytes() -> [UInt8] { data }
 }
 
 // MARK: - Transport Parameters Extension
@@ -382,7 +370,11 @@ public struct UnknownExtension: TLSExtensionValue {
 /// in the TLS handshake via extensions.
 public struct TransportParametersExtension: TLSExtensionValue {
     public static var extensionType: TLSExtensionType { .transportParameters }
-    public let data: Data
+    public let data: [UInt8]
 
-    public func encode() -> Data { data }
+    public init(data: [UInt8]) {
+        self.data = data
+    }
+
+    public func encodeBytes() -> [UInt8] { data }
 }

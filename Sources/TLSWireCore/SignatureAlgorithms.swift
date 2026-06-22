@@ -6,7 +6,7 @@
 /// } SignatureSchemeList;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Signature Algorithms Extension
 
@@ -35,30 +35,31 @@ public struct SignatureAlgorithmsExtension: Sendable, TLSExtensionValue {
         ])
     }
 
-    public func encode() -> Data {
-        var algorithmsData = Data(capacity: supportedSignatureAlgorithms.count * 2)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var algorithmsData = [UInt8]()
+        algorithmsData.reserveCapacity(supportedSignatureAlgorithms.count * 2)
         for scheme in supportedSignatureAlgorithms {
             algorithmsData.append(UInt8((scheme.rawValue >> 8) & 0xFF))
             algorithmsData.append(UInt8(scheme.rawValue & 0xFF))
         }
 
-        var writer = TLSWriter(capacity: 2 + algorithmsData.count)
-        writer.writeVector16(algorithmsData)
-        return writer.finish()
+        var writer = ByteWriter(reservingCapacity: 2 + algorithmsData.count)
+        try writer.wWriteVector16(algorithmsData)
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> SignatureAlgorithmsExtension {
-        var reader = TLSReader(data: data)
-        let algorithmsData = try reader.readVector16()
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> SignatureAlgorithmsExtension {
+        var reader = ByteReader(data)
+        let algorithmsData = try reader.wReadVector16()
 
         guard algorithmsData.count >= 2 && algorithmsData.count % 2 == 0 else {
-            throw TLSDecodeError.invalidFormat("Invalid signature algorithms length")
+            throw TLSWireError.decode(.invalidFormat("Invalid signature algorithms length"))
         }
 
         var algorithms: [SignatureScheme] = []
-        var algReader = TLSReader(data: algorithmsData)
-        while algReader.hasMore {
-            let value = try algReader.readUInt16()
+        var algReader = ByteReader(algorithmsData)
+        while !algReader.isAtEnd {
+            let value = try algReader.wReadUInt16()
             if let scheme = SignatureScheme(rawValue: value) {
                 algorithms.append(scheme)
             }

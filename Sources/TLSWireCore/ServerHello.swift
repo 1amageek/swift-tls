@@ -11,16 +11,16 @@
 /// } ServerHello;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 /// TLS 1.3 ServerHello message
 public struct ServerHello: Sendable {
 
     /// 32 bytes of random data
-    public let random: Data
+    public let random: [UInt8]
 
     /// Legacy session ID echo (must match ClientHello)
-    public let legacySessionIDEcho: Data
+    public let legacySessionIDEcho: [UInt8]
 
     /// Selected cipher suite
     public let cipherSuite: CipherSuite
@@ -40,13 +40,13 @@ public struct ServerHello: Sendable {
     /// Creates a ServerHello with the specified parameters
     /// - Throws: `TLSDecodeError.invalidFormat` if random is not 32 bytes
     public init(
-        random: Data,
-        legacySessionIDEcho: Data,
+        random: [UInt8],
+        legacySessionIDEcho: [UInt8],
         cipherSuite: CipherSuite,
         extensions: [TLSExtension]
-    ) throws {
+    ) throws(TLSWireError) {
         guard random.count == TLSConstants.randomLength else {
-            throw TLSDecodeError.invalidFormat("ServerHello random must be \(TLSConstants.randomLength) bytes, got \(random.count)")
+            throw TLSWireError.decode(.invalidFormat("ServerHello random must be \(TLSConstants.randomLength) bytes, got \(random.count)"))
         }
         self.random = random
         self.legacySessionIDEcho = legacySessionIDEcho
@@ -54,23 +54,13 @@ public struct ServerHello: Sendable {
         self.extensions = extensions
     }
 
-    /// Creates a ServerHello with generated random
-    public init(
-        legacySessionIDEcho: Data,
-        cipherSuite: CipherSuite,
-        extensions: [TLSExtension]
-    ) throws {
-        let random = try secureRandomBytes(count: TLSConstants.randomLength)
-        try self.init(random: random, legacySessionIDEcho: legacySessionIDEcho, cipherSuite: cipherSuite, extensions: extensions)
-    }
-
     /// Creates a HelloRetryRequest
     /// - Note: Uses the well-known HRR random value per RFC 8446
     public static func helloRetryRequest(
-        legacySessionIDEcho: Data,
+        legacySessionIDEcho: [UInt8],
         cipherSuite: CipherSuite,
         extensions: [TLSExtension]
-    ) throws -> ServerHello {
+    ) throws(TLSWireError) -> ServerHello {
         try ServerHello(
             random: TLSConstants.helloRetryRequestRandom,
             legacySessionIDEcho: legacySessionIDEcho,
@@ -82,8 +72,8 @@ public struct ServerHello: Sendable {
     // MARK: - Encoding
 
     /// Encodes the ServerHello content (without handshake header)
-    public func encode() -> Data {
-        var writer = TLSWriter(capacity: 128)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var writer = ByteWriter(reservingCapacity: 128)
 
         // legacy_version (2 bytes) - always 0x0303 for TLS 1.3
         writer.writeUInt16(TLSConstants.legacyVersion)
@@ -92,7 +82,7 @@ public struct ServerHello: Sendable {
         writer.writeBytes(random)
 
         // legacy_session_id_echo (variable, 1-byte length)
-        writer.writeVector8(legacySessionIDEcho)
+        try writer.wWriteVector8(legacySessionIDEcho)
 
         // cipher_suite (2 bytes)
         writer.writeUInt16(cipherSuite.rawValue)
@@ -101,52 +91,52 @@ public struct ServerHello: Sendable {
         writer.writeUInt8(0x00)
 
         // extensions (variable, 2-byte length)
-        var extensionData = Data(capacity: 64)
+        var extensionData = [UInt8]()
         for ext in extensions {
-            extensionData.append(ext.encode())
+            extensionData.append(contentsOf: try ext.encodeBytes())
         }
-        writer.writeVector16(extensionData)
+        try writer.wWriteVector16(extensionData)
 
-        return writer.finish()
+        return writer.finishArray()
     }
 
     /// Encodes as a complete handshake message (with header)
-    public func encodeAsHandshake() -> Data {
-        HandshakeCodec.encode(type: .serverHello, content: encode())
+    public func encodeAsHandshakeBytes() throws(TLSWireError) -> [UInt8] {
+        HandshakeCodec.encodeBytes(type: .serverHello, content: try encodeBytes())
     }
 
     // MARK: - Decoding
 
     /// Decodes a ServerHello from content data (without handshake header)
-    public static func decode(from data: Data) throws -> ServerHello {
-        var reader = TLSReader(data: data)
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> ServerHello {
+        var reader = ByteReader(data)
 
         // legacy_version
-        let legacyVersion = try reader.readUInt16()
+        let legacyVersion = try reader.wReadUInt16()
         guard legacyVersion == TLSConstants.legacyVersion else {
-            throw TLSDecodeError.unsupportedVersion(legacyVersion)
+            throw TLSWireError.decode(.unsupportedVersion(legacyVersion))
         }
 
         // random
-        let random = try reader.readBytes(TLSConstants.randomLength)
+        let random = try reader.wReadBytes(TLSConstants.randomLength)
 
         // legacy_session_id_echo
-        let legacySessionIDEcho = try reader.readVector8()
+        let legacySessionIDEcho = try reader.wReadVector8()
 
         // cipher_suite
-        let cipherSuiteValue = try reader.readUInt16()
+        let cipherSuiteValue = try reader.wReadUInt16()
         guard let cipherSuite = CipherSuite(rawValue: cipherSuiteValue) else {
-            throw TLSDecodeError.invalidFormat("Unknown cipher suite: \(cipherSuiteValue)")
+            throw TLSWireError.decode(.invalidFormat("Unknown cipher suite: \(cipherSuiteValue)"))
         }
 
         // legacy_compression_method
-        let compressionMethod = try reader.readUInt8()
+        let compressionMethod = try reader.wReadUInt8()
         guard compressionMethod == 0x00 else {
-            throw TLSDecodeError.invalidFormat("Invalid compression method: \(compressionMethod)")
+            throw TLSWireError.decode(.invalidFormat("Invalid compression method: \(compressionMethod)"))
         }
 
         // extensions — use appropriate context based on whether this is HRR
-        let extensionData = try reader.readVector16()
+        let extensionData = try reader.wReadVector16()
         let isHRR = random == TLSConstants.helloRetryRequestRandom
         let context: MessageContext = isHRR ? .helloRetryRequest : .serverHello
         let extensions = try TLSExtension.decodeExtensions(from: extensionData, context: context)
@@ -160,16 +150,6 @@ public struct ServerHello: Sendable {
     }
 
     // MARK: - Extension Helpers
-
-    /// Find an extension by type
-    public func findExtension<T: TLSExtensionValue>(_ type: T.Type) -> T? {
-        for ext in extensions {
-            if let value = ext.value as? T {
-                return value
-            }
-        }
-        return nil
-    }
 
     /// Get key share extension
     public var keyShare: KeyShareServerHello? {

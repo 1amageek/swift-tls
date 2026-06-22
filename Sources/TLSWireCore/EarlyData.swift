@@ -18,9 +18,12 @@
 ///     };
 /// } EarlyDataIndication;
 /// ```
+///
+/// The crypto-bearing `EarlyDataState` (which holds the client early traffic
+/// secret) lives in the `TLSCore` adapter; this core file carries only the pure
+/// wire types.
 
-import Foundation
-import Crypto
+import P2PCoreBytes
 
 // MARK: - Early Data Extension
 
@@ -39,35 +42,35 @@ public enum EarlyDataExtension: Sendable, TLSExtensionValue {
 
     // MARK: - Encoding
 
-    public func encode() -> Data {
+    public func encodeBytes() -> [UInt8] {
         switch self {
         case .clientHello, .encryptedExtensions:
-            return Data()
+            return []
         case .newSessionTicket(let maxSize):
-            var writer = TLSWriter(capacity: 4)
+            var writer = ByteWriter(reservingCapacity: 4)
             writer.writeUInt32(maxSize)
-            return writer.finish()
+            return writer.finishArray()
         }
     }
 
     // MARK: - Decoding
 
     /// Decode ClientHello/EncryptedExtensions variant (empty)
-    public static func decodeEmpty(from data: Data) throws -> EarlyDataExtension {
+    public static func decodeEmpty(from data: [UInt8]) throws(TLSWireError) -> EarlyDataExtension {
         guard data.isEmpty else {
-            throw TLSDecodeError.invalidFormat("EarlyData: expected empty for ClientHello/EncryptedExtensions")
+            throw TLSWireError.decode(.invalidFormat("EarlyData: expected empty for ClientHello/EncryptedExtensions"))
         }
         return .clientHello // or .encryptedExtensions - same encoding
     }
 
     /// Decode NewSessionTicket variant
-    public static func decodeNewSessionTicket(from data: Data) throws -> EarlyDataExtension {
+    public static func decodeNewSessionTicket(from data: [UInt8]) throws(TLSWireError) -> EarlyDataExtension {
         guard data.count == 4 else {
-            throw TLSDecodeError.invalidFormat("EarlyData in NewSessionTicket: expected 4 bytes")
+            throw TLSWireError.decode(.invalidFormat("EarlyData in NewSessionTicket: expected 4 bytes"))
         }
 
-        var reader = TLSReader(data: data)
-        let maxSize = try reader.readUInt32()
+        var reader = ByteReader(data)
+        let maxSize = try reader.wReadUInt32()
         return .newSessionTicket(maxEarlyDataSize: maxSize)
     }
 }
@@ -86,52 +89,18 @@ public enum EarlyDataExtension: Sendable, TLSExtensionValue {
 public struct EndOfEarlyData: Sendable {
     public init() {}
 
-    public func encode() -> Data {
-        Data()
+    public func encodeBytes() -> [UInt8] {
+        []
     }
 
-    public func encodeMessage() -> Data {
-        HandshakeCodec.encode(type: .endOfEarlyData, content: Data())
+    public func encodeMessageBytes() -> [UInt8] {
+        HandshakeCodec.encodeBytes(type: .endOfEarlyData, content: [])
     }
 
-    public static func decode(from data: Data) throws -> EndOfEarlyData {
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> EndOfEarlyData {
         guard data.isEmpty else {
-            throw TLSDecodeError.invalidFormat("EndOfEarlyData must be empty")
+            throw TLSWireError.decode(.invalidFormat("EndOfEarlyData must be empty"))
         }
         return EndOfEarlyData()
-    }
-}
-
-// MARK: - Early Data State
-
-/// State tracking for 0-RTT early data
-public struct EarlyDataState: Sendable {
-    /// Whether early data is being attempted
-    public var attemptingEarlyData: Bool = false
-
-    /// Whether server accepted early data
-    public var earlyDataAccepted: Bool = false
-
-    /// Maximum early data size from ticket
-    public var maxEarlyDataSize: UInt32 = 0
-
-    /// Amount of early data sent
-    public var earlyDataSent: UInt32 = 0
-
-    /// Client early traffic secret (for 0-RTT encryption)
-    public var clientEarlyTrafficSecret: SymmetricKey?
-
-    public init() {}
-
-    /// Check if more early data can be sent
-    public var canSendMoreEarlyData: Bool {
-        guard attemptingEarlyData else { return false }
-        guard maxEarlyDataSize > 0 else { return false }
-        return earlyDataSent < maxEarlyDataSize
-    }
-
-    /// Record early data being sent
-    public mutating func recordEarlyData(size: UInt32) {
-        earlyDataSent = earlyDataSent.addingReportingOverflow(size).partialValue
     }
 }

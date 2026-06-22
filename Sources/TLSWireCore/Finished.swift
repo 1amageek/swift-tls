@@ -12,7 +12,7 @@
 /// finished_key = HKDF-Expand-Label(BaseKey, "finished", "", Hash.length)
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Finished Message
 
@@ -20,25 +20,25 @@ import Foundation
 public struct Finished: Sendable {
 
     /// The verify data (HMAC of transcript)
-    public let verifyData: Data
+    public let verifyData: [UInt8]
 
     // MARK: - Initialization
 
-    public init(verifyData: Data) {
+    public init(verifyData: [UInt8]) {
         self.verifyData = verifyData
     }
 
     // MARK: - Encoding
 
     /// Encodes the Finished content (without handshake header)
-    public func encode() -> Data {
+    public func encodeBytes() -> [UInt8] {
         // Finished message is just the verify_data with no length prefix
         verifyData
     }
 
     /// Encodes as a complete handshake message (with header)
-    public func encodeAsHandshake() -> Data {
-        HandshakeCodec.encode(type: .finished, content: encode())
+    public func encodeAsHandshakeBytes() -> [UInt8] {
+        HandshakeCodec.encodeBytes(type: .finished, content: encodeBytes())
     }
 
     // MARK: - Decoding
@@ -47,9 +47,9 @@ public struct Finished: Sendable {
     /// - Parameters:
     ///   - data: The content data
     ///   - hashLength: Expected hash length (32 for SHA-256, 48 for SHA-384)
-    public static func decode(from data: Data, hashLength: Int = TLSConstants.verifyDataLength) throws -> Finished {
+    public static func decode(from data: [UInt8], hashLength: Int = TLSConstants.verifyDataLength) throws(TLSWireError) -> Finished {
         guard data.count == hashLength else {
-            throw TLSDecodeError.invalidFormat("Invalid verify data length: expected \(hashLength), got \(data.count)")
+            throw TLSWireError.decode(.invalidFormat("Invalid verify data length: expected \(hashLength), got \(data.count)"))
         }
         return Finished(verifyData: data)
     }
@@ -57,7 +57,7 @@ public struct Finished: Sendable {
     // MARK: - Verification
 
     /// Verify the finished message against expected verify data
-    public func verify(expected: Data) -> Bool {
+    public func verify(expected: [UInt8]) -> Bool {
         constantTimeEqual(verifyData, expected)
     }
 }
@@ -97,24 +97,24 @@ public struct KeyUpdate: Sendable {
     // MARK: - Encoding
 
     /// Encodes the KeyUpdate content (without handshake header)
-    public func encode() -> Data {
-        Data([requestUpdate.rawValue])
+    public func encodeBytes() -> [UInt8] {
+        [requestUpdate.rawValue]
     }
 
     /// Encodes as a complete handshake message (with header)
-    public func encodeAsHandshake() -> Data {
-        HandshakeCodec.encode(type: .keyUpdate, content: encode())
+    public func encodeAsHandshakeBytes() -> [UInt8] {
+        HandshakeCodec.encodeBytes(type: .keyUpdate, content: encodeBytes())
     }
 
     // MARK: - Decoding
 
     /// Decodes KeyUpdate from content data (without handshake header)
-    public static func decode(from data: Data) throws -> KeyUpdate {
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> KeyUpdate {
         guard data.count == 1 else {
-            throw TLSDecodeError.invalidFormat("Invalid KeyUpdate length: \(data.count)")
+            throw TLSWireError.decode(.invalidFormat("Invalid KeyUpdate length: \(data.count)"))
         }
-        guard let requestUpdate = RequestUpdate(rawValue: data[data.startIndex]) else {
-            throw TLSDecodeError.invalidFormat("Invalid KeyUpdateRequest: \(data[data.startIndex])")
+        guard let requestUpdate = RequestUpdate(rawValue: data[0]) else {
+            throw TLSWireError.decode(.invalidFormat("Invalid KeyUpdateRequest: \(data[0])"))
         }
         return KeyUpdate(requestUpdate: requestUpdate)
     }

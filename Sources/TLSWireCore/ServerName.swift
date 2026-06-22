@@ -13,7 +13,7 @@
 /// } ServerNameList;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Server Name Extension
 
@@ -31,50 +31,51 @@ public struct ServerNameExtension: Sendable, TLSExtensionValue {
         self.hostName = hostName
     }
 
-    public func encode() -> Data {
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
         guard let hostName = hostName else {
             // Empty extension for ServerHello acknowledgment
-            return Data()
+            return []
         }
 
-        let hostNameData = Data(hostName.utf8)
+        let hostNameData = [UInt8](hostName.utf8)
 
-        var serverNameData = Data(capacity: 3 + hostNameData.count)
+        var serverNameData = [UInt8]()
+        serverNameData.reserveCapacity(3 + hostNameData.count)
         // name_type (1 byte)
         serverNameData.append(Self.hostNameType)
         // HostName length (2 bytes)
         serverNameData.append(UInt8((hostNameData.count >> 8) & 0xFF))
         serverNameData.append(UInt8(hostNameData.count & 0xFF))
         // HostName
-        serverNameData.append(hostNameData)
+        serverNameData.append(contentsOf: hostNameData)
 
-        var writer = TLSWriter(capacity: 2 + serverNameData.count)
-        writer.writeVector16(serverNameData)
-        return writer.finish()
+        var writer = ByteWriter(reservingCapacity: 2 + serverNameData.count)
+        try writer.wWriteVector16(serverNameData)
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> ServerNameExtension {
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> ServerNameExtension {
         // Empty data means ServerHello acknowledgment
         if data.isEmpty {
             return ServerNameExtension(hostName: nil)
         }
 
-        var reader = TLSReader(data: data)
-        let serverNameListData = try reader.readVector16()
+        var reader = ByteReader(data)
+        let serverNameListData = try reader.wReadVector16()
 
         if serverNameListData.isEmpty {
             return ServerNameExtension(hostName: nil)
         }
 
-        var listReader = TLSReader(data: serverNameListData)
-        let nameType = try listReader.readUInt8()
+        var listReader = ByteReader(serverNameListData)
+        let nameType = try listReader.wReadUInt8()
 
         guard nameType == Self.hostNameType else {
-            throw TLSDecodeError.invalidFormat("Unknown name type: \(nameType)")
+            throw TLSWireError.decode(.invalidFormat("Unknown name type: \(nameType)"))
         }
 
-        let hostNameData = try listReader.readVector16()
-        let hostName = String(data: hostNameData, encoding: .utf8)
+        let hostNameData = try listReader.wReadVector16()
+        let hostName = String(validating: hostNameData, as: UTF8.self)
 
         return ServerNameExtension(hostName: hostName)
     }

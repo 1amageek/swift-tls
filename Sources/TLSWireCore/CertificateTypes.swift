@@ -28,7 +28,7 @@
 /// } ServerCertTypeExtension;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - Certificate Type
 
@@ -47,29 +47,29 @@ public enum CertificateType: UInt8, Sendable, Equatable {
 enum CertificateTypeCodec {
 
     /// Encode the ClientHello form: a 1-byte length-prefixed list.
-    static func encodeOffered(_ types: [CertificateType]) -> Data {
-        var writer = TLSWriter(capacity: 1 + types.count)
-        writer.writeVector8(Data(types.map(\.rawValue)))
-        return writer.finish()
+    static func encodeOffered(_ types: [CertificateType]) throws(TLSWireError) -> [UInt8] {
+        var writer = ByteWriter(reservingCapacity: 1 + types.count)
+        try writer.wWriteVector8(types.map { $0.rawValue })
+        return writer.finishArray()
     }
 
     /// Encode the EncryptedExtensions form: a single byte.
-    static func encodeSelected(_ type: CertificateType) -> Data {
-        Data([type.rawValue])
+    static func encodeSelected(_ type: CertificateType) -> [UInt8] {
+        [type.rawValue]
     }
 
     /// Decode the ClientHello form.
     ///
     /// Unknown certificate type values are ignored (the peer may offer
     /// types we do not implement), but the list itself must be non-empty.
-    static func decodeOffered(from data: Data, extensionName: String) throws -> [CertificateType] {
-        var reader = TLSReader(data: data)
-        let listData = try reader.readVector8()
+    static func decodeOffered(from data: [UInt8], extensionName: String) throws(TLSWireError) -> [CertificateType] {
+        var reader = ByteReader(data)
+        let listData = try reader.wReadVector8()
         guard reader.remaining == 0 else {
-            throw TLSDecodeError.invalidFormat("\(extensionName): trailing bytes after type list")
+            throw TLSWireError.decode(.invalidFormat("\(extensionName): trailing bytes after type list"))
         }
         guard !listData.isEmpty else {
-            throw TLSDecodeError.invalidFormat("\(extensionName): empty certificate type list")
+            throw TLSWireError.decode(.invalidFormat("\(extensionName): empty certificate type list"))
         }
 
         var types: [CertificateType] = []
@@ -86,14 +86,14 @@ enum CertificateTypeCodec {
     ///
     /// The selected type must be one we know: the server may only select
     /// a type the client offered, and we only offer known types.
-    static func decodeSelected(from data: Data, extensionName: String) throws -> CertificateType {
+    static func decodeSelected(from data: [UInt8], extensionName: String) throws(TLSWireError) -> CertificateType {
         guard data.count == 1 else {
-            throw TLSDecodeError.invalidFormat("\(extensionName): expected single selected type byte")
+            throw TLSWireError.decode(.invalidFormat("\(extensionName): expected single selected type byte"))
         }
-        guard let type = CertificateType(rawValue: data[data.startIndex]) else {
-            throw TLSDecodeError.invalidFormat(
-                "\(extensionName): unknown selected certificate type \(data[data.startIndex])"
-            )
+        guard let type = CertificateType(rawValue: data[0]) else {
+            throw TLSWireError.decode(.invalidFormat(
+                "\(extensionName): unknown selected certificate type \(data[0])"
+            ))
         }
         return type
     }
@@ -112,22 +112,22 @@ public enum ClientCertificateTypeExtension: Sendable, TLSExtensionValue, Equatab
     /// EncryptedExtensions variant: the type the server selected
     case selected(CertificateType)
 
-    public func encode() -> Data {
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
         switch self {
         case .offered(let types):
-            return CertificateTypeCodec.encodeOffered(types)
+            return try CertificateTypeCodec.encodeOffered(types)
         case .selected(let type):
             return CertificateTypeCodec.encodeSelected(type)
         }
     }
 
     /// Decode ClientHello variant
-    public static func decodeOffered(from data: Data) throws -> ClientCertificateTypeExtension {
+    public static func decodeOffered(from data: [UInt8]) throws(TLSWireError) -> ClientCertificateTypeExtension {
         .offered(try CertificateTypeCodec.decodeOffered(from: data, extensionName: "client_certificate_type"))
     }
 
     /// Decode EncryptedExtensions variant
-    public static func decodeSelected(from data: Data) throws -> ClientCertificateTypeExtension {
+    public static func decodeSelected(from data: [UInt8]) throws(TLSWireError) -> ClientCertificateTypeExtension {
         .selected(try CertificateTypeCodec.decodeSelected(from: data, extensionName: "client_certificate_type"))
     }
 }
@@ -145,22 +145,22 @@ public enum ServerCertificateTypeExtension: Sendable, TLSExtensionValue, Equatab
     /// EncryptedExtensions variant: the type the server selected
     case selected(CertificateType)
 
-    public func encode() -> Data {
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
         switch self {
         case .offered(let types):
-            return CertificateTypeCodec.encodeOffered(types)
+            return try CertificateTypeCodec.encodeOffered(types)
         case .selected(let type):
             return CertificateTypeCodec.encodeSelected(type)
         }
     }
 
     /// Decode ClientHello variant
-    public static func decodeOffered(from data: Data) throws -> ServerCertificateTypeExtension {
+    public static func decodeOffered(from data: [UInt8]) throws(TLSWireError) -> ServerCertificateTypeExtension {
         .offered(try CertificateTypeCodec.decodeOffered(from: data, extensionName: "server_certificate_type"))
     }
 
     /// Decode EncryptedExtensions variant
-    public static func decodeSelected(from data: Data) throws -> ServerCertificateTypeExtension {
+    public static func decodeSelected(from data: [UInt8]) throws(TLSWireError) -> ServerCertificateTypeExtension {
         .selected(try CertificateTypeCodec.decodeSelected(from: data, extensionName: "server_certificate_type"))
     }
 }

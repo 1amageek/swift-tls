@@ -25,7 +25,7 @@ public enum RawPublicKeyValidator {
         // RFC 7250 Section 3: the certificate_list contains exactly one
         // entry holding the DER-encoded SubjectPublicKeyInfo.
         guard certificate.certificates.count == 1,
-              let spkiData = certificate.certificates.first else {
+              let spkiData = certificate.certificatesData.first else {
             throw TLSHandshakeError.certificateVerificationFailed(
                 "Raw public key certificate must contain exactly one entry, got \(certificate.certificates.count)"
             )

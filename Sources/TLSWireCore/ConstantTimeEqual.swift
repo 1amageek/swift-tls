@@ -5,23 +5,21 @@
 ///
 /// Used for verify_data (Finished messages), HMAC tags, and cookie verification.
 
-import Foundation
-
-/// Compare two Data values in constant time.
+/// Compare two byte arrays in constant time.
 ///
 /// Returns `true` if and only if both sequences have equal length and
 /// identical byte contents. The comparison always examines every byte,
 /// preventing timing side-channel leaks.
 ///
 /// - Parameters:
-///   - a: First data to compare
-///   - b: Second data to compare
+///   - a: First byte array to compare
+///   - b: Second byte array to compare
 /// - Returns: `true` if the sequences are identical
-public func constantTimeEqual(_ a: Data, _ b: Data) -> Bool {
+public func constantTimeEqual(_ a: [UInt8], _ b: [UInt8]) -> Bool {
     guard a.count == b.count else { return false }
     var result: UInt8 = 0
     for i in 0..<a.count {
-        result |= a[a.startIndex + i] ^ b[b.startIndex + i]
+        result |= a[i] ^ b[i]
     }
     return result == 0
 }

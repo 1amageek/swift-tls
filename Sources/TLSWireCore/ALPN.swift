@@ -8,7 +8,7 @@
 /// opaque ProtocolName<1..2^8-1>;
 /// ```
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - ALPN Extension
 
@@ -33,28 +33,28 @@ public struct ALPNExtension: Sendable, TLSExtensionValue {
         ALPNExtension(protocols: ["libp2p"])
     }
 
-    public func encode() -> Data {
-        var protocolListData = Data()
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var protocolListData = [UInt8]()
         for proto in protocols {
-            let protoData = Data(proto.utf8)
+            let protoData = [UInt8](proto.utf8)
             protocolListData.append(UInt8(protoData.count))
-            protocolListData.append(protoData)
+            protocolListData.append(contentsOf: protoData)
         }
 
-        var writer = TLSWriter(capacity: 2 + protocolListData.count)
-        writer.writeVector16(protocolListData)
-        return writer.finish()
+        var writer = ByteWriter(reservingCapacity: 2 + protocolListData.count)
+        try writer.wWriteVector16(protocolListData)
+        return writer.finishArray()
     }
 
-    public static func decode(from data: Data) throws -> ALPNExtension {
-        var reader = TLSReader(data: data)
-        let protocolListData = try reader.readVector16()
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> ALPNExtension {
+        var reader = ByteReader(data)
+        let protocolListData = try reader.wReadVector16()
 
         var protocols: [String] = []
-        var listReader = TLSReader(data: protocolListData)
-        while listReader.hasMore {
-            let protoData = try listReader.readVector8()
-            if let proto = String(data: protoData, encoding: .utf8) {
+        var listReader = ByteReader(protocolListData)
+        while !listReader.isAtEnd {
+            let protoData = try listReader.wReadVector8()
+            if let proto = String(validating: protoData, as: UTF8.self) {
                 protocols.append(proto)
             }
         }

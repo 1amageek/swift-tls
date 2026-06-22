@@ -15,7 +15,7 @@
 ///
 /// TLS 1.3 supports psk_ke and psk_dhe_ke modes.
 
-import Foundation
+import P2PCoreBytes
 
 // MARK: - PSK Key Exchange Mode
 
@@ -52,27 +52,27 @@ public struct PskKeyExchangeModesExtension: Sendable, TLSExtensionValue {
 
     // MARK: - Encoding
 
-    public func encode() -> Data {
-        var writer = TLSWriter(capacity: keModes.count + 1)
+    public func encodeBytes() throws(TLSWireError) -> [UInt8] {
+        var writer = ByteWriter(reservingCapacity: keModes.count + 1)
 
         // ke_modes<1..255>
-        var modesData = Data()
+        var modesData = [UInt8]()
         for mode in keModes {
             modesData.append(mode.rawValue)
         }
-        writer.writeVector8(modesData)
+        try writer.wWriteVector8(modesData)
 
-        return writer.finish()
+        return writer.finishArray()
     }
 
     // MARK: - Decoding
 
-    public static func decode(from data: Data) throws -> PskKeyExchangeModesExtension {
-        var reader = TLSReader(data: data)
+    public static func decode(from data: [UInt8]) throws(TLSWireError) -> PskKeyExchangeModesExtension {
+        var reader = ByteReader(data)
 
-        let modesData = try reader.readVector8()
+        let modesData = try reader.wReadVector8()
         guard !modesData.isEmpty else {
-            throw TLSDecodeError.invalidFormat("PskKeyExchangeModes: empty")
+            throw TLSWireError.decode(.invalidFormat("PskKeyExchangeModes: empty"))
         }
 
         var keModes: [PskKeyExchangeMode] = []
@@ -84,7 +84,7 @@ public struct PskKeyExchangeModesExtension: Sendable, TLSExtensionValue {
         }
 
         guard !keModes.isEmpty else {
-            throw TLSDecodeError.invalidFormat("PskKeyExchangeModes: no supported modes")
+            throw TLSWireError.decode(.invalidFormat("PskKeyExchangeModes: no supported modes"))
         }
 
         return PskKeyExchangeModesExtension(keModes: keModes)
