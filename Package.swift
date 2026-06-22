@@ -22,6 +22,7 @@ let package = Package(
     ],
     products: [
         .library(name: "TLSWireCore", targets: ["TLSWireCore"]),
+        .library(name: "TLSCryptoCore", targets: ["TLSCryptoCore"]),
         .library(name: "DTLSWireCore", targets: ["DTLSWireCore"]),
         .library(name: "TLSRecordCore", targets: ["TLSRecordCore"]),
         .library(name: "DTLSRecordCore", targets: ["DTLSRecordCore"]),
@@ -44,6 +45,17 @@ let package = Package(
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
             ],
             path: "Sources/TLSWireCore",
+            swiftSettings: coreSettings
+        ),
+        // ---- Embedded-clean TLS 1.3 key schedule (dual-build: host + Embedded) ----
+        .target(
+            name: "TLSCryptoCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                "TLSWireCore",
+            ],
+            path: "Sources/TLSCryptoCore",
             swiftSettings: coreSettings
         ),
         // ---- Embedded-clean DTLS wire codec (dual-build: host + Embedded) ----
@@ -77,6 +89,9 @@ let package = Package(
             name: "TLSCore",
             dependencies: [
                 "TLSWireCore",
+                "TLSCryptoCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
                 .product(name: "P2PCoreFoundation", package: "swift-p2p-core"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
@@ -114,7 +129,12 @@ let package = Package(
         ),
         .testTarget(
             name: "TLSCoreTests",
-            dependencies: ["TLSCore", "TLSRecord"],
+            dependencies: [
+                "TLSCore",
+                "TLSRecord",
+                "TLSCryptoCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+            ],
             path: "Tests/TLSCoreTests"
         ),
         .testTarget(
