@@ -23,6 +23,7 @@ let package = Package(
     products: [
         .library(name: "TLSWireCore", targets: ["TLSWireCore"]),
         .library(name: "DTLSWireCore", targets: ["DTLSWireCore"]),
+        .library(name: "TLSRecordCore", targets: ["TLSRecordCore"]),
         .library(name: "TLSCore", targets: ["TLSCore"]),
         .library(name: "TLSRecord", targets: ["TLSRecord"]),
         .library(name: "DTLSCore", targets: ["DTLSCore"]),
@@ -54,6 +55,15 @@ let package = Package(
             path: "Sources/DTLSWireCore",
             swiftSettings: coreSettings
         ),
+        // ---- Embedded-clean TLS record-layer codec (dual-build: host + Embedded) ----
+        .target(
+            name: "TLSRecordCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+            ],
+            path: "Sources/TLSRecordCore",
+            swiftSettings: coreSettings
+        ),
         // ---- Foundation adapter: keeps the existing Data-based public API ----
         .target(
             name: "TLSCore",
@@ -70,6 +80,7 @@ let package = Package(
             name: "TLSRecord",
             dependencies: [
                 "TLSCore",
+                "TLSRecordCore",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/TLSRecord"

@@ -1,8 +1,9 @@
 /// TLS 1.3 Content Types (RFC 8446 Section 5.1)
 ///
 /// Content types identify the type of payload in a TLS record.
-
-import Foundation
+///
+/// Embedded-clean: pure value type, no Foundation. The Foundation-based `Data`
+/// surface lives in the `TLSRecord` adapter.
 
 /// TLS 1.3 content types
 public enum TLSContentType: UInt8, Sendable {

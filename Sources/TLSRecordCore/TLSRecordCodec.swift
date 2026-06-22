@@ -6,8 +6,12 @@
 /// - ProtocolVersion (2 bytes, always 0x0303 for TLS 1.3)
 /// - Length (2 bytes)
 /// - Fragment (variable)
-
-import Foundation
+///
+/// Embedded-clean: the codec is expressed over `[UInt8]`, not Foundation `Data`.
+/// The decode path uses manual `[UInt8]` indexing (no `ByteReader`) to preserve
+/// the original control flow exactly, including the `nil`-returning
+/// "need more data" cases. The Foundation-based `Data` entry points live in the
+/// `TLSRecord` adapter. Decode uses typed throws (``TLSRecordError``).
 
 // MARK: - TLS Record
 
@@ -17,9 +21,9 @@ public struct TLSRecord: Sendable {
     public let contentType: TLSContentType
 
     /// The record fragment (plaintext or ciphertext)
-    public let fragment: Data
+    public let fragment: [UInt8]
 
-    public init(contentType: TLSContentType, fragment: Data) {
+    public init(contentType: TLSContentType, fragment: [UInt8]) {
         self.contentType = contentType
         self.fragment = fragment
     }
@@ -50,28 +54,30 @@ public enum TLSRecordCodec {
     ///   - type: The content type
     ///   - data: The plaintext fragment
     /// - Returns: The encoded TLS record
-    public static func encodePlaintext(type: TLSContentType, data: Data) -> Data {
-        var record = Data(capacity: headerSize + data.count)
+    public static func encodePlaintext(type: TLSContentType, data: [UInt8]) -> [UInt8] {
+        var record = [UInt8]()
+        record.reserveCapacity(headerSize + data.count)
         record.append(type.rawValue)
-        record.append(UInt8(legacyVersion >> 8))
+        record.append(UInt8((legacyVersion >> 8) & 0xFF))
         record.append(UInt8(legacyVersion & 0xFF))
-        record.append(UInt8(data.count >> 8))
+        record.append(UInt8((data.count >> 8) & 0xFF))
         record.append(UInt8(data.count & 0xFF))
-        record.append(data)
+        record.append(contentsOf: data)
         return record
     }
 
     /// Encode a ciphertext record (always uses applicationData content type and 0x0303 version)
     /// - Parameter ciphertext: The encrypted record body (inner plaintext + AEAD tag)
     /// - Returns: The encoded TLS ciphertext record
-    public static func encodeCiphertext(_ ciphertext: Data) -> Data {
-        var record = Data(capacity: headerSize + ciphertext.count)
+    public static func encodeCiphertext(_ ciphertext: [UInt8]) -> [UInt8] {
+        var record = [UInt8]()
+        record.reserveCapacity(headerSize + ciphertext.count)
         record.append(TLSContentType.applicationData.rawValue)
-        record.append(UInt8(legacyVersion >> 8))
+        record.append(UInt8((legacyVersion >> 8) & 0xFF))
         record.append(UInt8(legacyVersion & 0xFF))
-        record.append(UInt8(ciphertext.count >> 8))
+        record.append(UInt8((ciphertext.count >> 8) & 0xFF))
         record.append(UInt8(ciphertext.count & 0xFF))
-        record.append(ciphertext)
+        record.append(contentsOf: ciphertext)
         return record
     }
 
@@ -83,26 +89,25 @@ public enum TLSRecordCodec {
     /// - Returns: A tuple of (decoded record, bytes consumed), or nil if the buffer
     ///   doesn't contain a complete record yet
     /// - Throws: ``TLSRecordError`` if the record is malformed
-    public static func decode(from buffer: Data) throws -> (TLSRecord, Int)? {
+    public static func decode(from buffer: [UInt8]) throws(TLSRecordError) -> (TLSRecord, Int)? {
         guard buffer.count >= headerSize else {
             return nil // Need more data
         }
 
-        let startIndex = buffer.startIndex
-        guard let contentType = TLSContentType(rawValue: buffer[startIndex]) else {
-            throw TLSRecordError.invalidContentType(buffer[startIndex])
+        guard let contentType = TLSContentType(rawValue: buffer[0]) else {
+            throw TLSRecordError.invalidContentType(buffer[0])
         }
 
         // Version check (accept 0x0301 or 0x0303)
-        let versionHigh = buffer[startIndex + 1]
-        let versionLow = buffer[startIndex + 2]
+        let versionHigh = buffer[1]
+        let versionLow = buffer[2]
         let version = UInt16(versionHigh) << 8 | UInt16(versionLow)
         guard version == 0x0303 || version == 0x0301 else {
             throw TLSRecordError.unsupportedVersion(version)
         }
 
-        let lengthHigh = Int(buffer[startIndex + 3])
-        let lengthLow = Int(buffer[startIndex + 4])
+        let lengthHigh = Int(buffer[3])
+        let lengthLow = Int(buffer[4])
         let fragmentLength = (lengthHigh << 8) | lengthLow
 
         // Validate length
@@ -115,11 +120,11 @@ public enum TLSRecordCodec {
             return nil // Need more data
         }
 
-        let fragment = buffer[buffer.index(startIndex, offsetBy: headerSize)..<buffer.index(startIndex, offsetBy: totalLength)]
+        let fragment = Array(buffer[headerSize..<totalLength])
 
         let record = TLSRecord(
             contentType: contentType,
-            fragment: Data(fragment)
+            fragment: fragment
         )
         return (record, totalLength)
     }

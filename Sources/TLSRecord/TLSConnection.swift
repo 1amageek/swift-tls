@@ -376,7 +376,7 @@ public final class TLSConnection: Sendable {
 
             // During 0-RTT phase, use earlyDataCryptor for all incoming records
             if let earlyDataCryptor {
-                let (content, innerType) = try earlyDataCryptor.decrypt(ciphertext: record.fragment)
+                let (content, innerType) = try earlyDataCryptor.decrypt(ciphertext: Data(record.fragment))
                 return (innerType, content)
             }
 
@@ -385,13 +385,13 @@ public final class TLSConnection: Sendable {
                 // is active are a protocol violation.
                 throw TLSRecordError.unexpectedPlaintextApplicationData
             }
-            let (content, innerType) = try mainCryptor.decrypt(ciphertext: record.fragment)
+            let (content, innerType) = try mainCryptor.decrypt(ciphertext: Data(record.fragment))
             return (innerType, content)
         }
 
         // changeCipherSpec is always unencrypted (middlebox compatibility)
         if record.contentType == .changeCipherSpec {
-            return (.changeCipherSpec, record.fragment)
+            return (.changeCipherSpec, Data(record.fragment))
         }
 
         // RFC 8446 Section 5: After encryption is active, handshake and alert
@@ -408,7 +408,7 @@ public final class TLSConnection: Sendable {
             }
         }
 
-        return (record.contentType, record.fragment)
+        return (record.contentType, Data(record.fragment))
     }
 
     /// Determine the current encryption level based on handshake state.

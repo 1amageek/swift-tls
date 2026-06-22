@@ -235,7 +235,7 @@ public final class TLSRecordLayer: Sendable {
             if isEncrypted {
                 throw TLSRecordError.unexpectedPlaintextAlert
             }
-            let alert = try TLSAlert.decode(from: record.fragment)
+            let alert = try TLSAlert.decode(from: Data(record.fragment))
             return [.alert(alert)]
 
         case .handshake:
@@ -244,12 +244,12 @@ public final class TLSRecordLayer: Sendable {
             if isEncrypted {
                 throw TLSRecordError.unexpectedPlaintextHandshake
             }
-            return [.handshakeMessage(record.fragment)]
+            return [.handshakeMessage(Data(record.fragment))]
 
         case .applicationData:
             if isEncrypted {
                 // Decrypt and extract inner content type
-                let (content, innerType) = try cryptor.decrypt(ciphertext: record.fragment)
+                let (content, innerType) = try cryptor.decrypt(ciphertext: Data(record.fragment))
 
                 switch innerType {
                 case .applicationData:
