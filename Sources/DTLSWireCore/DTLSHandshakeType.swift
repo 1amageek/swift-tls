@@ -2,8 +2,6 @@
 ///
 /// DTLS 1.2 handshake types. Includes HelloVerifyRequest (type 3) which is DTLS-specific.
 
-import Foundation
-
 /// DTLS 1.2 handshake message type
 public enum DTLSHandshakeType: UInt8, Sendable {
     case clientHello = 1

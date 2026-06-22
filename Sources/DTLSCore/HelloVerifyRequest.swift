@@ -6,9 +6,14 @@
 ///   ProtocolVersion server_version;
 ///   opaque cookie<0..2^8-1>;
 /// } HelloVerifyRequest;
+///
+/// This type stays in the Foundation adapter (not `DTLSWireCore`): its cookie is
+/// surfaced as `Data` and its `generate` / `verifyCookie` helpers drive the
+/// crypto-backed `DTLSCookieSecretProvider`. The pure wire framing is shared with
+/// the core via the `DTLSWireCore` `ByteReader` / `ByteWriter` cursors.
 
 import Foundation
-import Crypto
+import P2PCoreBytes
 import TLSCore
 
 /// DTLS HelloVerifyRequest message
@@ -44,15 +49,19 @@ public struct HelloVerifyRequest: Sendable {
         clientRandom: Data,
         cipherSuites: [DTLSCipherSuite]
     ) -> Data {
-        var writer = TLSWriter()
-        writer.writeVector16(clientAddress)
-        writer.writeVector8(clientRandom)
-        var suitesWriter = TLSWriter()
-        for suite in cipherSuites {
-            suite.encode(writer: &suitesWriter)
+        var writer = ByteWriter()
+        do {
+            try writer.writeVector16([UInt8](clientAddress))
+            try writer.writeVector8([UInt8](clientRandom))
+            var suitesWriter = ByteWriter()
+            for suite in cipherSuites {
+                suite.encode(writer: &suitesWriter)
+            }
+            try writer.writeVector16(suitesWriter.finishArray())
+        } catch {
+            fatalError("DTLS cookie binding material exceeded a wire length bound: \(error)")
         }
-        writer.writeVector16(suitesWriter.finish())
-        return writer.finish()
+        return Data(writer.finishArray())
     }
 
     /// Generate a cookie bound to the ClientHello using the provided secret provider.
@@ -68,7 +77,7 @@ public struct HelloVerifyRequest: Sendable {
     ) -> HelloVerifyRequest {
         let material = bindingMaterial(
             clientAddress: clientAddress,
-            clientRandom: clientHello.random,
+            clientRandom: Data(clientHello.random),
             cipherSuites: clientHello.cipherSuites
         )
         let cookie = provider.makeCookie(bindingMaterial: material)
@@ -90,7 +99,7 @@ public struct HelloVerifyRequest: Sendable {
     ) -> Bool {
         let material = bindingMaterial(
             clientAddress: clientAddress,
-            clientRandom: clientHello.random,
+            clientRandom: Data(clientHello.random),
             cipherSuites: clientHello.cipherSuites
         )
         return provider.verifyCookie(cookie, bindingMaterial: material)
@@ -98,17 +107,29 @@ public struct HelloVerifyRequest: Sendable {
 
     /// Encode the HelloVerifyRequest body
     public func encode() -> Data {
-        var writer = TLSWriter()
+        var writer = ByteWriter()
         serverVersion.encode(writer: &writer)
-        writer.writeVector8(cookie)
-        return writer.finish()
+        do {
+            try writer.writeVector8([UInt8](cookie))
+        } catch {
+            fatalError("DTLS HelloVerifyRequest encoding exceeded a wire length bound: \(error)")
+        }
+        return Data(writer.finishArray())
     }
 
     /// Decode a HelloVerifyRequest from body data
     public static func decode(from data: Data) throws -> HelloVerifyRequest {
-        var reader = TLSReader(data: data)
-        let version = try DTLSVersion.decode(reader: &reader)
-        let cookie = try reader.readVector8()
-        return HelloVerifyRequest(serverVersion: version, cookie: cookie)
+        var reader = ByteReader([UInt8](data))
+        let version: DTLSVersion
+        let cookie: [UInt8]
+        do {
+            version = try DTLSVersion.decode(reader: &reader)
+            cookie = try reader.readVector8()
+        } catch let e as DTLSWireError {
+            try e.rethrowUnwrapped()
+        } catch {
+            throw error
+        }
+        return HelloVerifyRequest(serverVersion: version, cookie: Data(cookie))
     }
 }

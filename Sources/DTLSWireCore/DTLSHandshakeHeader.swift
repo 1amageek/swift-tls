@@ -10,8 +10,7 @@
 /// TLS 1.3 uses only 4 bytes (type + length). DTLS adds 8 bytes for
 /// message sequencing and fragmentation support.
 
-import Foundation
-import TLSCore
+import P2PCoreBytes
 
 /// DTLS handshake message header
 public struct DTLSHandshakeHeader: Sendable, Equatable {
@@ -53,24 +52,24 @@ public struct DTLSHandshakeHeader: Sendable, Equatable {
     }
 
     /// Encode header to wire format
-    public func encode(writer: inout TLSWriter) {
+    public func encode(writer: inout ByteWriter) throws(DTLSWireError) {
         writer.writeUInt8(messageType.rawValue)
-        writer.writeUInt24(length)
+        try writer.dWriteUInt24(length)
         writer.writeUInt16(messageSeq)
-        writer.writeUInt24(fragmentOffset)
-        writer.writeUInt24(fragmentLength)
+        try writer.dWriteUInt24(fragmentOffset)
+        try writer.dWriteUInt24(fragmentLength)
     }
 
     /// Decode header from wire format
-    public static func decode(reader: inout TLSReader) throws -> DTLSHandshakeHeader {
-        let typeRaw = try reader.readUInt8()
+    public static func decode(reader: inout ByteReader) throws(DTLSWireError) -> DTLSHandshakeHeader {
+        let typeRaw = try reader.dReadUInt8()
         guard let messageType = DTLSHandshakeType(rawValue: typeRaw) else {
-            throw DTLSError.invalidFormat("Unknown handshake type: \(typeRaw)")
+            throw DTLSWireError.dtls(.invalidFormat("Unknown handshake type: \(typeRaw)"))
         }
-        let length = try reader.readUInt24()
-        let messageSeq = try reader.readUInt16()
-        let fragmentOffset = try reader.readUInt24()
-        let fragmentLength = try reader.readUInt24()
+        let length = try reader.dReadUInt24()
+        let messageSeq = try reader.dReadUInt16()
+        let fragmentOffset = try reader.dReadUInt24()
+        let fragmentLength = try reader.dReadUInt24()
 
         return DTLSHandshakeHeader(
             messageType: messageType,
@@ -85,17 +84,17 @@ public struct DTLSHandshakeHeader: Sendable, Equatable {
     public static func encodeMessage(
         type: DTLSHandshakeType,
         messageSeq: UInt16,
-        body: Data
-    ) -> Data {
-        var writer = TLSWriter()
+        body: [UInt8]
+    ) throws(DTLSWireError) -> [UInt8] {
+        var writer = ByteWriter()
         let header = DTLSHandshakeHeader(
             messageType: type,
             length: UInt32(body.count),
             messageSeq: messageSeq
         )
-        header.encode(writer: &writer)
+        try header.encode(writer: &writer)
         writer.writeBytes(body)
-        return writer.finish()
+        return writer.finishArray()
     }
 
     /// Fragment a handshake message into pieces that fit within maxFragmentSize.
@@ -110,26 +109,26 @@ public struct DTLSHandshakeHeader: Sendable, Equatable {
     public static func fragmentMessage(
         type: DTLSHandshakeType,
         messageSeq: UInt16,
-        body: Data,
+        body: [UInt8],
         maxFragmentSize: Int = 1200
-    ) -> [Data] {
+    ) throws(DTLSWireError) -> [[UInt8]] {
         let totalLength = UInt32(body.count)
 
         // If body fits in one fragment, return as single message
         if body.count <= maxFragmentSize {
-            return [encodeMessage(type: type, messageSeq: messageSeq, body: body)]
+            return [try encodeMessage(type: type, messageSeq: messageSeq, body: body)]
         }
 
-        var fragments: [Data] = []
+        var fragments: [[UInt8]] = []
         var offset = 0
 
         while offset < body.count {
             let remainingLength = body.count - offset
             let fragmentLength = min(remainingLength, maxFragmentSize)
 
-            let fragmentBody = body.subdata(in: offset..<(offset + fragmentLength))
+            let fragmentBody = Array(body[offset..<(offset + fragmentLength)])
 
-            var writer = TLSWriter()
+            var writer = ByteWriter()
             let header = DTLSHandshakeHeader(
                 messageType: type,
                 length: totalLength,
@@ -137,9 +136,9 @@ public struct DTLSHandshakeHeader: Sendable, Equatable {
                 fragmentOffset: UInt32(offset),
                 fragmentLength: UInt32(fragmentLength)
             )
-            header.encode(writer: &writer)
+            try header.encode(writer: &writer)
             writer.writeBytes(fragmentBody)
-            fragments.append(writer.finish())
+            fragments.append(writer.finishArray())
 
             offset += fragmentLength
         }

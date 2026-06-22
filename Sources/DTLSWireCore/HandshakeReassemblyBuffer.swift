@@ -4,8 +4,7 @@
 /// message once all fragments have arrived. Handles out-of-order delivery
 /// and overlapping fragments.
 
-import Foundation
-import TLSCore
+import P2PCoreBytes
 
 /// Reassembly buffer for fragmented DTLS handshake messages.
 public struct HandshakeReassemblyBuffer: Sendable {
@@ -26,13 +25,13 @@ public struct HandshakeReassemblyBuffer: Sendable {
     struct PendingMessage: Sendable {
         let messageType: DTLSHandshakeType
         let totalLength: UInt32
-        var received: Data
+        var received: [UInt8]
         var coverage: [(offset: UInt32, length: UInt32)]
 
         init(messageType: DTLSHandshakeType, totalLength: UInt32) {
             self.messageType = messageType
             self.totalLength = totalLength
-            self.received = Data(count: Int(totalLength))
+            self.received = [UInt8](repeating: 0, count: Int(totalLength))
             self.coverage = []
         }
 
@@ -91,32 +90,32 @@ public struct HandshakeReassemblyBuffer: Sendable {
     ///   (no silent skip), or `DTLSError.reassemblyLimitExceeded` when the message
     ///   length or concurrent-reassembly cap is exceeded.
     @discardableResult
-    public mutating func addFragment(header: DTLSHandshakeHeader, body: Data) throws -> Data? {
+    public mutating func addFragment(header: DTLSHandshakeHeader, body: [UInt8]) throws(DTLSWireError) -> [UInt8]? {
         // Cap the declared total length BEFORE any allocation, so an attacker cannot
         // force a multi-megabyte eager allocation from a 24-bit length field.
         guard header.length <= Self.maxMessageLength else {
-            throw DTLSError.reassemblyLimitExceeded(
+            throw DTLSWireError.dtls(.reassemblyLimitExceeded(
                 "message length \(header.length) exceeds maximum \(Self.maxMessageLength)"
-            )
+            ))
         }
 
         // Validate fragment bounds (check for overflow).
         guard header.fragmentOffset <= header.length,
               header.fragmentLength <= header.length - header.fragmentOffset else {
-            throw DTLSError.invalidFormat(
+            throw DTLSWireError.dtls(.invalidFormat(
                 "fragment extends beyond message length (offset=\(header.fragmentOffset), len=\(header.fragmentLength), total=\(header.length))"
-            )
+            ))
         }
 
         guard body.count == Int(header.fragmentLength) else {
-            throw DTLSError.invalidFormat(
+            throw DTLSWireError.dtls(.invalidFormat(
                 "fragment body size \(body.count) does not match declared fragment length \(header.fragmentLength)"
-            )
+            ))
         }
 
         // Non-fragmented message: return immediately.
         if !header.isFragmented {
-            return DTLSHandshakeHeader.encodeMessage(
+            return try DTLSHandshakeHeader.encodeMessage(
                 type: header.messageType,
                 messageSeq: header.messageSeq,
                 body: body
@@ -131,9 +130,9 @@ public struct HandshakeReassemblyBuffer: Sendable {
             message = existing
         } else {
             guard pending.count < Self.maxConcurrentReassemblies else {
-                throw DTLSError.reassemblyLimitExceeded(
+                throw DTLSWireError.dtls(.reassemblyLimitExceeded(
                     "concurrent reassemblies \(pending.count) reached maximum \(Self.maxConcurrentReassemblies)"
-                )
+                ))
             }
             message = PendingMessage(
                 messageType: header.messageType,
@@ -144,13 +143,13 @@ public struct HandshakeReassemblyBuffer: Sendable {
         // Validate consistency with existing fragments.
         guard message.messageType == header.messageType,
               message.totalLength == header.length else {
-            throw DTLSError.invalidFormat(
+            throw DTLSWireError.dtls(.invalidFormat(
                 "inconsistent fragment for message_seq \(header.messageSeq) (type/length mismatch)"
-            )
+            ))
         }
 
         // Copy fragment data into the correct position.
-        let startIndex = message.received.startIndex + Int(header.fragmentOffset)
+        let startIndex = Int(header.fragmentOffset)
         let endIndex = startIndex + Int(header.fragmentLength)
         message.received.replaceSubrange(startIndex..<endIndex, with: body)
 
@@ -160,7 +159,7 @@ public struct HandshakeReassemblyBuffer: Sendable {
         // Check if complete.
         if message.isComplete {
             pending.removeValue(forKey: header.messageSeq)
-            return DTLSHandshakeHeader.encodeMessage(
+            return try DTLSHandshakeHeader.encodeMessage(
                 type: header.messageType,
                 messageSeq: header.messageSeq,
                 body: message.received
@@ -186,28 +185,28 @@ public struct HandshakeReassemblyBuffer: Sendable {
     ///   trailing partial fragment, or a fragment is internally inconsistent
     ///   (no silent skip of leftover bytes).
     public static func parseMessages(
-        from recordFragment: Data
-    ) throws -> [(header: DTLSHandshakeHeader, body: Data)] {
-        var reader = TLSReader(data: recordFragment)
-        var messages: [(header: DTLSHandshakeHeader, body: Data)] = []
+        from recordFragment: [UInt8]
+    ) throws(DTLSWireError) -> [(header: DTLSHandshakeHeader, body: [UInt8])] {
+        var reader = ByteReader(recordFragment)
+        var messages: [(header: DTLSHandshakeHeader, body: [UInt8])] = []
 
-        while reader.hasMore {
+        while !reader.isAtEnd {
             // A complete fragment requires at least the 12-byte header.
             guard reader.remaining >= DTLSHandshakeHeader.headerSize else {
-                throw DTLSError.invalidFormat(
+                throw DTLSWireError.dtls(.invalidFormat(
                     "trailing \(reader.remaining) bytes too short for a handshake header"
-                )
+                ))
             }
 
             let header = try DTLSHandshakeHeader.decode(reader: &reader)
 
             guard reader.remaining >= Int(header.fragmentLength) else {
-                throw DTLSError.invalidFormat(
+                throw DTLSWireError.dtls(.invalidFormat(
                     "handshake fragment body truncated (need \(header.fragmentLength), have \(reader.remaining))"
-                )
+                ))
             }
 
-            let body = try reader.readBytes(Int(header.fragmentLength))
+            let body = try reader.dReadBytes(Int(header.fragmentLength))
             messages.append((header, body))
         }
 

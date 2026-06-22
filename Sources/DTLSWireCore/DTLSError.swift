@@ -1,7 +1,5 @@
 /// DTLS Error Types
 
-import Foundation
-
 /// Errors that occur during DTLS operations
 public enum DTLSError: Error, Sendable {
     // Handshake errors

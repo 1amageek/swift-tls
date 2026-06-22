@@ -9,8 +9,7 @@
 ///   Extension extensions<0..2^16-1>;
 /// } ServerHello;
 
-import Foundation
-import TLSCore
+import P2PCoreBytes
 
 /// DTLS 1.2 ServerHello message
 public struct DTLSServerHello: Sendable {
@@ -18,66 +17,60 @@ public struct DTLSServerHello: Sendable {
     public let serverVersion: DTLSVersion
 
     /// 32-byte server random
-    public let random: Data
+    public let random: [UInt8]
 
     /// Session ID
-    public let sessionID: Data
+    public let sessionID: [UInt8]
 
     /// Selected cipher suite
     public let cipherSuite: DTLSCipherSuite
 
-    /// - Throws: A secure-random error if `random` is not supplied and the system
-    ///   CSPRNG fails. RNG failure is surfaced, never swallowed.
     public init(
         serverVersion: DTLSVersion = .v1_2,
-        random: Data? = nil,
-        sessionID: Data = Data(),
+        random: [UInt8],
+        sessionID: [UInt8] = [],
         cipherSuite: DTLSCipherSuite
-    ) throws {
+    ) {
         self.serverVersion = serverVersion
-        if let random {
-            self.random = random
-        } else {
-            self.random = try secureRandomBytes(count: 32)
-        }
+        self.random = random
         self.sessionID = sessionID
         self.cipherSuite = cipherSuite
     }
 
     /// Encode the ServerHello body
-    public func encode() -> Data {
-        var writer = TLSWriter()
+    public func encodeBytes() throws(DTLSWireError) -> [UInt8] {
+        var writer = ByteWriter()
 
         serverVersion.encode(writer: &writer)
         writer.writeBytes(random)
-        writer.writeVector8(sessionID)
+        try writer.dWriteVector8(sessionID)
         cipherSuite.encode(writer: &writer)
         writer.writeUInt8(0x00) // compression_method: null
 
         // ec_point_formats extension
-        var extWriter = TLSWriter()
+        var extWriter = ByteWriter()
         extWriter.writeUInt16(0x000B) // ec_point_formats
-        var ecWriter = TLSWriter()
-        ecWriter.writeVector8(Data([0x00])) // uncompressed
-        extWriter.writeVector16(ecWriter.finish())
+        var ecWriter = ByteWriter()
+        try ecWriter.dWriteVector8([0x00]) // uncompressed
+        try extWriter.dWriteVector16(ecWriter.finishArray())
 
-        writer.writeVector16(extWriter.finish())
+        try writer.dWriteVector16(extWriter.finishArray())
 
-        return writer.finish()
+        return writer.finishArray()
     }
 
     /// Decode a ServerHello from body data
-    public static func decode(from data: Data) throws -> DTLSServerHello {
-        var reader = TLSReader(data: data)
+    public static func decode(from data: [UInt8]) throws(DTLSWireError) -> DTLSServerHello {
+        var reader = ByteReader(data)
 
         let version = try DTLSVersion.decode(reader: &reader)
-        let random = try reader.readBytes(32)
-        let sessionID = try reader.readVector8()
+        let random = try reader.dReadBytes(32)
+        let sessionID = try reader.dReadVector8()
         let suite = try DTLSCipherSuite.decode(reader: &reader)
-        _ = try reader.readUInt8() // compression_method
+        _ = try reader.dReadUInt8() // compression_method
 
         // Skip extensions parsing for now
-        return try DTLSServerHello(
+        return DTLSServerHello(
             serverVersion: version,
             random: random,
             sessionID: sessionID,

@@ -3,8 +3,6 @@
 /// Content types identify the type of payload in a DTLS record.
 /// Same values as TLS, but defined separately to avoid depending on TLSRecord.
 
-import Foundation
-
 /// DTLS record content types
 public enum DTLSContentType: UInt8, Sendable, Equatable {
     /// Change cipher spec

@@ -77,7 +77,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
             let clientHello = try DTLSClientHello(
                 cipherSuites: supportedCipherSuites
             )
-            s.context.clientRandom = clientHello.random
+            s.context.clientRandom = Data(clientHello.random)
 
             let body = clientHello.encode()
             let msg = DTLSHandshakeHeader.encodeMessage(
@@ -215,7 +215,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         state s: inout HandlerState
     ) throws -> [DTLSHandshakeAction] {
         let hvr = try HelloVerifyRequest.decode(from: body)
-        s.context.cookie = hvr.cookie
+        s.context.cookie = Data(hvr.cookie)
 
         // Reset message seq and transcript for the retry
         s.context.messageSeq = 0
@@ -225,7 +225,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         // this construction does not invoke the CSPRNG.
         let clientHello = try DTLSClientHello(
             random: s.context.clientRandom,
-            cookie: hvr.cookie,
+            cookie: Data(hvr.cookie),
             cipherSuites: supportedCipherSuites
         )
 
@@ -246,7 +246,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         state s: inout HandlerState
     ) throws {
         let serverHello = try DTLSServerHello.decode(from: body)
-        s.context.serverRandom = serverHello.random
+        s.context.serverRandom = Data(serverHello.random)
         s.context.cipherSuite = serverHello.cipherSuite
         s.context.keySchedule = DTLSKeySchedule(cipherSuite: serverHello.cipherSuite)
     }
@@ -259,7 +259,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         guard let firstCert = certMsg.certificates.first else {
             throw DTLSError.invalidCertificate("Empty certificate chain")
         }
-        s.context.serverCertificateDER = firstCert
+        s.context.serverCertificateDER = Data(firstCert)
     }
 
     private func handleServerKeyExchange(
@@ -267,7 +267,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         state s: inout HandlerState
     ) throws {
         let ske = try ServerKeyExchange.decode(from: body)
-        s.context.serverPublicKey = ske.publicKey
+        s.context.serverPublicKey = Data(ske.publicKey)
         s.context.serverNamedGroup = ske.namedGroup
 
         // Verify server signature using server's certificate
@@ -419,7 +419,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
-        guard constantTimeEqual(finished.verifyData, expectedVerifyData) else {
+        guard constantTimeEqual(Data(finished.verifyData), expectedVerifyData) else {
             throw DTLSError.verifyDataMismatch
         }
 
@@ -558,7 +558,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
             // accepted). The cookie is bound to this ClientHello's address, random,
             // and cipher suites, so a swapped ClientHello fails.
             let valid = HelloVerifyRequest.verifyCookie(
-                clientHello.cookie,
+                Data(clientHello.cookie),
                 clientAddress: clientAddress,
                 clientHello: clientHello,
                 provider: cookieProvider
@@ -613,7 +613,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
             switch (s.state, header.messageType) {
             case (.waitingClientKeyExchange, .certificate):
                 let certMsg = try CertificateMessage.decode(from: body)
-                s.context.clientCertificateDER = certMsg.certificates.first
+                s.context.clientCertificateDER = certMsg.certificates.first.map { Data($0) }
                 return []
 
             case (.waitingClientKeyExchange, .clientKeyExchange):
@@ -681,7 +681,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
         rawMessage: Data,
         state s: inout HandlerState
     ) throws -> [DTLSHandshakeAction] {
-        s.context.clientRandom = clientHello.random
+        s.context.clientRandom = Data(clientHello.random)
 
         // Select cipher suite
         guard let selectedSuite = selectCipherSuite(from: clientHello.cipherSuites) else {
@@ -703,7 +703,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
 
         // ServerHello
         let serverHello = try DTLSServerHello(cipherSuite: selectedSuite)
-        s.context.serverRandom = serverHello.random
+        s.context.serverRandom = Data(serverHello.random)
         let shBody = serverHello.encode()
         let shEncoded = DTLSHandshakeHeader.encodeMessage(
             type: .serverHello,
@@ -769,13 +769,13 @@ public final class DTLSServerHandshakeHandler: Sendable {
         state s: inout HandlerState
     ) throws -> [DTLSHandshakeAction] {
         let cke = try ClientKeyExchange.decode(from: body)
-        s.context.clientPublicKey = cke.publicKey
+        s.context.clientPublicKey = Data(cke.publicKey)
 
         // Compute shared secret
         guard let keyExchange = s.context.keyExchange else {
             throw DTLSError.invalidState("No key exchange")
         }
-        let sharedSecret = try keyExchange.sharedSecret(with: cke.publicKey)
+        let sharedSecret = try keyExchange.sharedSecret(with: Data(cke.publicKey))
 
         guard let clientRandom = s.context.clientRandom,
               let serverRandom = s.context.serverRandom else {
@@ -879,7 +879,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
             throw DTLSError.invalidState("Key schedule not initialized")
         }
 
-        guard constantTimeEqual(finished.verifyData, expectedVerifyData) else {
+        guard constantTimeEqual(Data(finished.verifyData), expectedVerifyData) else {
             throw DTLSError.verifyDataMismatch
         }
 
