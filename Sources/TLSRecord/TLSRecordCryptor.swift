@@ -7,17 +7,27 @@
 /// - AAD: The TLS ciphertext record header
 /// - Inner plaintext: content + ContentType(1 byte) + zero padding
 ///
+/// ## Architecture (crypto-seam slice)
+///
+/// The record AEAD logic (nonce XOR seq, AAD construction, inner-plaintext
+/// padding strip) lives in the Embedded-clean `TLSRecordCore.TLSRecordProtector`
+/// value type, generic over the `CryptoProvider.AEAD` seam. This adapter:
+/// - holds the `Mutex`-backed sequence-number + protector state (the protector is
+///   a value type; the `Mutex` and sequence numbers stay caller-side here),
+/// - specialises the core at `C = TLSFoundationProvider`, `A = TLSRecordAEAD`
+///   (swift-crypto–backed, byte-identical to the legacy direct-Crypto path),
+/// - bridges `Data` ↔ `[UInt8]` at the boundary,
+/// - preserves the exact public API and decrypt-failure behavior.
+///
 /// ## Security Properties
 ///
-/// This implementation uses Apple CryptoKit's AES-GCM and ChaChaPoly,
-/// which provide constant-time AEAD operations. The decrypt method
-/// catches all CryptoKit errors uniformly as `badRecordMac` to avoid
-/// leaking information about the nature of decryption failures
-/// (padding oracle prevention).
+/// The protector reports any AEAD-open failure uniformly as `badRecordMac` to
+/// avoid leaking information about the nature of decryption failures (padding
+/// oracle prevention, RFC 8446 §5.2). No silent fallback.
 
 import Foundation
 import TLSCore
-import Crypto
+import TLSRecordCore
 import Synchronization
 
 // MARK: - TLS Record Cryptor
@@ -47,9 +57,11 @@ public final class TLSRecordCryptor: Sendable {
         guard keys.iv.count == 12 else {
             throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
         }
+        let keyBytes = [UInt8](keys.key.withUnsafeBytes { Data($0) })
+        let ivBytes = [UInt8](keys.iv)
+        let protector = try Self.makeProtector(key: keyBytes, iv: ivBytes, cipherSuite: cipherSuite)
         state.withLock { state in
-            state.sendKey = keys.key
-            state.sendIV = keys.iv
+            state.sendProtector = protector
             state.sendSequenceNumber = 0
         }
     }
@@ -60,9 +72,11 @@ public final class TLSRecordCryptor: Sendable {
         guard keys.iv.count == 12 else {
             throw TLSRecordError.invalidKey("TLS 1.3 IV must be exactly 12 bytes, got \(keys.iv.count)")
         }
+        let keyBytes = [UInt8](keys.key.withUnsafeBytes { Data($0) })
+        let ivBytes = [UInt8](keys.iv)
+        let protector = try Self.makeProtector(key: keyBytes, iv: ivBytes, cipherSuite: cipherSuite)
         state.withLock { state in
-            state.receiveKey = keys.key
-            state.receiveIV = keys.iv
+            state.receiveProtector = protector
             state.receiveSequenceNumber = 0
         }
     }
@@ -72,7 +86,7 @@ public final class TLSRecordCryptor: Sendable {
     /// Encrypt content into a TLS ciphertext record body.
     ///
     /// Creates the "inner plaintext" (content + content type + padding),
-    /// then encrypts with AEAD.
+    /// then encrypts with AEAD via the Embedded-clean record protector.
     ///
     /// - Parameters:
     ///   - content: The plaintext content
@@ -84,38 +98,22 @@ public final class TLSRecordCryptor: Sendable {
         }
 
         return try state.withLock { state in
-            guard let key = state.sendKey, let iv = state.sendIV else {
+            guard let protector = state.sendProtector else {
                 throw TLSRecordError.noKeysAvailable
             }
 
-            // Build inner plaintext: content + content_type
-            var innerPlaintext = Data(capacity: content.count + 1)
-            innerPlaintext.append(content)
-            innerPlaintext.append(type.rawValue)
-
-            guard state.sendSequenceNumber < UInt64.max else {
-                throw TLSRecordError.sequenceNumberOverflow
+            let ciphertext: [UInt8]
+            do {
+                ciphertext = try protector.protect(
+                    content: [UInt8](content),
+                    type: type,
+                    sequenceNumber: state.sendSequenceNumber
+                )
+            } catch let error as TLSRecordProtectionError {
+                throw Self.mapProtectionError(error)
             }
-
-            // Build nonce: IV XOR sequence number
-            let nonce = Self.buildNonce(iv: iv, sequenceNumber: state.sendSequenceNumber)
-
-            // Build AAD: record header for the ciphertext record
-            // ContentType(0x17) + Version(0x0303) + Length(ciphertext length)
-            let ciphertextLength = innerPlaintext.count + Self.tagLength(for: cipherSuite)
-            let aad = Self.buildAAD(ciphertextLength: ciphertextLength)
-
-            // Encrypt
-            let ciphertext = try Self.aeadSeal(
-                plaintext: innerPlaintext,
-                key: key,
-                nonce: nonce,
-                aad: aad,
-                cipherSuite: cipherSuite
-            )
-
             state.sendSequenceNumber += 1
-            return ciphertext
+            return Data(ciphertext)
         }
     }
 
@@ -127,171 +125,74 @@ public final class TLSRecordCryptor: Sendable {
     /// - Returns: A tuple of (decrypted content, content type)
     public func decrypt(ciphertext: Data) throws -> (Data, TLSContentType) {
         return try state.withLock { state in
-            guard let key = state.receiveKey, let iv = state.receiveIV else {
+            guard let protector = state.receiveProtector else {
                 throw TLSRecordError.noKeysAvailable
             }
 
-            // Build nonce
-            let nonce = Self.buildNonce(iv: iv, sequenceNumber: state.receiveSequenceNumber)
-
-            // Build AAD
-            let aad = Self.buildAAD(ciphertextLength: ciphertext.count)
-
-            // Decrypt
-            let innerPlaintext = try Self.aeadOpen(
-                ciphertext: ciphertext,
-                key: key,
-                nonce: nonce,
-                aad: aad,
-                cipherSuite: cipherSuite
-            )
-
-            guard state.receiveSequenceNumber < UInt64.max else {
-                throw TLSRecordError.sequenceNumberOverflow
+            let result: (content: [UInt8], type: TLSContentType)
+            do {
+                result = try protector.unprotect(
+                    ciphertext: [UInt8](ciphertext),
+                    sequenceNumber: state.receiveSequenceNumber
+                )
+            } catch let error as TLSRecordProtectionError {
+                throw Self.mapProtectionError(error)
             }
             state.receiveSequenceNumber += 1
-
-            // Parse inner plaintext: find the real content type
-            // Strip trailing zeros (padding), then the last non-zero byte is the content type
-            guard let (content, contentType) = Self.parseInnerPlaintext(innerPlaintext) else {
-                throw TLSRecordError.invalidInnerPlaintext
-            }
-
-            return (content, contentType)
+            return (Data(result.content), result.type)
         }
     }
 
     // MARK: - Private Helpers
 
+    /// The concrete record protector type the host adapter specialises:
+    /// the Embedded-clean generic core at `C = TLSFoundationProvider`,
+    /// `A = TLSRecordAEAD` (swift-crypto–backed).
+    private typealias Protector = TLSRecordProtector<TLSFoundationProvider, TLSRecordAEAD>
+
     private struct CryptorState: Sendable {
-        var sendKey: SymmetricKey?
-        var sendIV: Data?
+        /// The send (write) protector (value type). The sequence number stays here
+        /// (caller-locked); only the AEAD + IV live in the protector. `nil` until
+        /// send keys are installed (allows send-only / receive-only key states).
+        var sendProtector: Protector?
         var sendSequenceNumber: UInt64 = 0
 
-        var receiveKey: SymmetricKey?
-        var receiveIV: Data?
+        /// The receive (read) protector (value type). `nil` until receive keys are
+        /// installed.
+        var receiveProtector: Protector?
         var receiveSequenceNumber: UInt64 = 0
     }
 
-    /// Build the per-record nonce (RFC 8446 Section 5.3)
-    /// Nonce = IV XOR sequence_number (padded to IV length)
-    private static func buildNonce(iv: Data, sequenceNumber: UInt64) -> Data {
-        var nonce = iv
-        let seqBytes = withUnsafeBytes(of: sequenceNumber.bigEndian) { Data($0) }
-
-        // XOR the sequence number into the last 8 bytes of the IV
-        let offset = nonce.count - 8
-        for i in 0..<8 {
-            nonce[nonce.startIndex + offset + i] ^= seqBytes[i]
-        }
-        return nonce
-    }
-
-    /// Build AAD for AEAD (the ciphertext record header)
-    private static func buildAAD(ciphertextLength: Int) -> Data {
-        var aad = Data(capacity: 5)
-        aad.append(TLSContentType.applicationData.rawValue) // 0x17
-        aad.append(0x03) // Version high
-        aad.append(0x03) // Version low
-        aad.append(UInt8(ciphertextLength >> 8))
-        aad.append(UInt8(ciphertextLength & 0xFF))
-        return aad
-    }
-
-    /// Parse inner plaintext to extract content and content type
-    /// Inner plaintext = content + ContentType(1) + zeros(padding)
-    private static func parseInnerPlaintext(_ data: Data) -> (Data, TLSContentType)? {
-        guard !data.isEmpty else { return nil }
-
-        // Find the last non-zero byte (content type)
-        var idx = data.endIndex - 1
-        while idx >= data.startIndex && data[idx] == 0 {
-            idx -= 1
-        }
-
-        guard idx >= data.startIndex else { return nil }
-        guard let contentType = TLSContentType(rawValue: data[idx]) else { return nil }
-
-        let content = data[data.startIndex..<idx]
-        return (Data(content), contentType)
-    }
-
-    /// AEAD tag length for the cipher suite
-    private static func tagLength(for cipherSuite: CipherSuite) -> Int {
-        16 // All TLS 1.3 cipher suites use 16-byte tags
-    }
-
-    /// AEAD seal (encrypt + authenticate)
-    private static func aeadSeal(
-        plaintext: Data,
-        key: SymmetricKey,
-        nonce: Data,
-        aad: Data,
+    /// Builds a single-direction protector from raw key + IV bytes.
+    private static func makeProtector(
+        key: [UInt8],
+        iv: [UInt8],
         cipherSuite: CipherSuite
-    ) throws -> Data {
-        switch cipherSuite {
-        case .tls_aes_128_gcm_sha256, .tls_aes_256_gcm_sha384:
-            let aeadNonce = try AES.GCM.Nonce(data: nonce)
-            let sealedBox = try AES.GCM.seal(
-                plaintext,
-                using: key,
-                nonce: aeadNonce,
-                authenticating: aad
-            )
-            // Return ciphertext + tag combined
-            return sealedBox.ciphertext + sealedBox.tag
-
-        case .tls_chacha20_poly1305_sha256:
-            let aeadNonce = try ChaChaPoly.Nonce(data: nonce)
-            let sealedBox = try ChaChaPoly.seal(
-                plaintext,
-                using: key,
-                nonce: aeadNonce,
-                authenticating: aad
-            )
-            return sealedBox.ciphertext + sealedBox.tag
-        }
-    }
-
-    /// AEAD open (decrypt + verify)
-    private static func aeadOpen(
-        ciphertext: Data,
-        key: SymmetricKey,
-        nonce: Data,
-        aad: Data,
-        cipherSuite: CipherSuite
-    ) throws -> Data {
-        let tagSize = tagLength(for: cipherSuite)
-        guard ciphertext.count >= tagSize else {
-            throw TLSRecordError.badRecordMac
-        }
-
-        let splitIndex = ciphertext.count - tagSize
-        let encryptedData = Data(ciphertext.prefix(splitIndex))
-        let tag = Data(ciphertext.suffix(tagSize))
-
+    ) throws -> Protector {
         do {
-            switch cipherSuite {
-            case .tls_aes_128_gcm_sha256, .tls_aes_256_gcm_sha384:
-                let aeadNonce = try AES.GCM.Nonce(data: nonce)
-                let sealedBox = try AES.GCM.SealedBox(
-                    nonce: aeadNonce,
-                    ciphertext: encryptedData,
-                    tag: tag
-                )
-                return try AES.GCM.open(sealedBox, using: key, authenticating: aad)
+            return try Protector(
+                aead: TLSRecordAEAD(key: key, cipherSuite: cipherSuite),
+                iv: iv
+            )
+        } catch let error as TLSRecordProtectionError {
+            throw Self.mapProtectionError(error)
+        }
+    }
 
-            case .tls_chacha20_poly1305_sha256:
-                let aeadNonce = try ChaChaPoly.Nonce(data: nonce)
-                let sealedBox = try ChaChaPoly.SealedBox(
-                    nonce: aeadNonce,
-                    ciphertext: encryptedData,
-                    tag: tag
-                )
-                return try ChaChaPoly.open(sealedBox, using: key, authenticating: aad)
-            }
-        } catch {
-            throw TLSRecordError.badRecordMac
+    /// Maps the core's typed protection error onto the public `TLSRecordError`,
+    /// preserving the exact behavior the legacy cryptor exposed.
+    private static func mapProtectionError(_ error: TLSRecordProtectionError) -> TLSRecordError {
+        switch error {
+        case .invalidIVLength(let expected, let actual):
+            return .invalidKey("TLS 1.3 IV must be exactly \(expected) bytes, got \(actual)")
+        case .plaintextTooLarge(let size):
+            return .plaintextTooLarge(size)
+        case .sequenceNumberOverflow:
+            return .sequenceNumberOverflow
+        case .ciphertextTooShort, .badRecordMac, .crypto:
+            return .badRecordMac
+        case .invalidInnerPlaintext:
+            return .invalidInnerPlaintext
         }
     }
 }

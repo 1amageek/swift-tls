@@ -68,19 +68,24 @@ let package = Package(
             path: "Sources/DTLSWireCore",
             swiftSettings: coreSettings
         ),
-        // ---- Embedded-clean TLS record-layer codec (dual-build: host + Embedded) ----
+        // ---- Embedded-clean TLS record-layer codec + AEAD protector (dual-build) ----
         .target(
             name: "TLSRecordCore",
             dependencies: [
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                "TLSWireCore",
             ],
             path: "Sources/TLSRecordCore",
             swiftSettings: coreSettings
         ),
-        // ---- Embedded-clean DTLS record-layer types (anti-replay window, errors) ----
+        // ---- Embedded-clean DTLS record-layer types (anti-replay, errors, AEAD protector) ----
         .target(
             name: "DTLSRecordCore",
-            dependencies: [],
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+            ],
             path: "Sources/DTLSRecordCore",
             swiftSettings: coreSettings
         ),
@@ -139,7 +144,12 @@ let package = Package(
         ),
         .testTarget(
             name: "TLSRecordTests",
-            dependencies: ["TLSRecord", "TLSCore"],
+            dependencies: [
+                "TLSRecord",
+                "TLSCore",
+                "TLSRecordCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+            ],
             path: "Tests/TLSRecordTests"
         ),
         .testTarget(
@@ -149,7 +159,12 @@ let package = Package(
         ),
         .testTarget(
             name: "DTLSRecordTests",
-            dependencies: ["DTLSRecord", "DTLSCore"],
+            dependencies: [
+                "DTLSRecord",
+                "DTLSCore",
+                "DTLSRecordCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+            ],
             path: "Tests/DTLSRecordTests"
         ),
     ]

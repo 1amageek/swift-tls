@@ -8,13 +8,30 @@
 ///
 /// This differs from TLS 1.3 which uses:
 ///   nonce = IV XOR sequence_number (implicit)
+///
+/// ## Architecture (crypto-seam slice)
+///
+/// The record AEAD logic (explicit-nonce assembly, output framing) lives in the
+/// Embedded-clean `DTLSRecordCore.DTLSRecordProtector` value type, generic over
+/// the `CryptoProvider.AEAD` seam. This adapter:
+/// - keeps the existing stateless static `seal`/`open` API (sequence/epoch state
+///   stays in `DTLSRecordLayer`/`DTLSSession`, passed in as values),
+/// - specialises the core at `C = TLSFoundationProvider`, `A = DTLSRecordAEAD`
+///   (swift-crypto AES-GCM, byte-identical to the legacy direct-Crypto path),
+/// - bridges `Data` ↔ `[UInt8]`/`SymmetricKey` at the boundary,
+/// - bridges the core's typed `DTLSRecordProtectionError` to the public
+///   `DTLSRecordError` so behavior is unchanged (no silent fallback).
 
 import Foundation
 import Crypto
 import DTLSCore
+import DTLSRecordCore
 
 /// DTLS 1.2 AEAD record encryption/decryption
 public enum DTLSRecordCryptor: Sendable {
+
+    /// The concrete protector type the host adapter specialises.
+    private typealias Protector = DTLSRecordProtector<TLSFoundationProvider, DTLSRecordAEAD>
 
     /// Encrypt a plaintext record payload using AES-GCM
     /// - Parameters:
@@ -31,25 +48,17 @@ public enum DTLSRecordCryptor: Sendable {
         explicitNonce: Data,
         additionalData: Data
     ) throws -> Data {
-        guard fixedIV.count == 4 else {
-            throw DTLSRecordError.encryptionFailed("Fixed IV must be 4 bytes")
+        let protector = try makeProtector(key: key, fixedIV: fixedIV)
+        do {
+            let output = try protector.seal(
+                plaintext: [UInt8](plaintext),
+                explicitNonce: [UInt8](explicitNonce),
+                aad: [UInt8](additionalData)
+            )
+            return Data(output)
+        } catch let error as DTLSRecordProtectionError {
+            throw mapSealError(error)
         }
-        guard explicitNonce.count == 8 else {
-            throw DTLSRecordError.encryptionFailed("Explicit nonce must be 8 bytes")
-        }
-
-        // nonce = fixed_IV (4) + explicit_nonce (8) = 12 bytes
-        let nonce = fixedIV + explicitNonce
-
-        let sealedBox = try AES.GCM.seal(
-            plaintext,
-            using: key,
-            nonce: try AES.GCM.Nonce(data: nonce),
-            authenticating: additionalData
-        )
-
-        // Output: explicit_nonce + ciphertext + tag
-        return explicitNonce + sealedBox.ciphertext + sealedBox.tag
     }
 
     /// Decrypt a ciphertext record payload using AES-GCM
@@ -65,33 +74,58 @@ public enum DTLSRecordCryptor: Sendable {
         fixedIV: Data,
         additionalData: Data
     ) throws -> Data {
-        guard fixedIV.count == 4 else {
-            throw DTLSRecordError.decryptionFailed("Fixed IV must be 4 bytes")
+        let protector = try makeProtector(key: key, fixedIV: fixedIV)
+        do {
+            let plaintext = try protector.open(
+                ciphertext: [UInt8](ciphertext),
+                aad: [UInt8](additionalData)
+            )
+            return Data(plaintext)
+        } catch let error as DTLSRecordProtectionError {
+            throw mapOpenError(error)
         }
+    }
 
-        // Minimum: 8 (explicit nonce) + 0 (data) + 16 (tag) = 24 bytes
-        guard ciphertext.count >= 24 else {
-            throw DTLSRecordError.decryptionFailed("Ciphertext too short")
+    // MARK: - Private helpers
+
+    private static func makeProtector(key: SymmetricKey, fixedIV: Data) throws -> Protector {
+        let keyBytes = [UInt8](key.withUnsafeBytes { Data($0) })
+        do {
+            return try Protector(aead: DTLSRecordAEAD(key: keyBytes), fixedIV: [UInt8](fixedIV))
+        } catch let error as DTLSRecordProtectionError {
+            throw mapSealError(error)
         }
+    }
 
-        // Extract explicit nonce (first 8 bytes)
-        let explicitNonce = ciphertext.prefix(8)
-        let encryptedData = ciphertext.dropFirst(8)
+    /// Maps protection errors raised on the encrypt path to `DTLSRecordError`,
+    /// preserving the legacy messages.
+    private static func mapSealError(_ error: DTLSRecordProtectionError) -> DTLSRecordError {
+        switch error {
+        case .invalidFixedIVLength:
+            return .encryptionFailed("Fixed IV must be 4 bytes")
+        case .invalidExplicitNonceLength:
+            return .encryptionFailed("Explicit nonce must be 8 bytes")
+        case .ciphertextTooShort:
+            return .encryptionFailed("Ciphertext too short")
+        case .decryptionFailed:
+            return .encryptionFailed("AEAD failure")
+        case .crypto:
+            return .encryptionFailed("AEAD failure")
+        }
+    }
 
-        // nonce = fixed_IV (4) + explicit_nonce (8)
-        let nonce = fixedIV + explicitNonce
-
-        // Split ciphertext and tag
-        let tagStart = encryptedData.count - 16
-        let encrypted = encryptedData.prefix(tagStart)
-        let tag = encryptedData.suffix(16)
-
-        let sealedBox = try AES.GCM.SealedBox(
-            nonce: AES.GCM.Nonce(data: nonce),
-            ciphertext: encrypted,
-            tag: tag
-        )
-
-        return try AES.GCM.open(sealedBox, using: key, authenticating: additionalData)
+    /// Maps protection errors raised on the decrypt path to `DTLSRecordError`,
+    /// preserving the legacy messages.
+    private static func mapOpenError(_ error: DTLSRecordProtectionError) -> DTLSRecordError {
+        switch error {
+        case .invalidFixedIVLength:
+            return .decryptionFailed("Fixed IV must be 4 bytes")
+        case .invalidExplicitNonceLength:
+            return .decryptionFailed("Explicit nonce must be 8 bytes")
+        case .ciphertextTooShort:
+            return .decryptionFailed("Ciphertext too short")
+        case .decryptionFailed, .crypto:
+            return .decryptionFailed("AEAD authentication failed")
+        }
     }
 }
