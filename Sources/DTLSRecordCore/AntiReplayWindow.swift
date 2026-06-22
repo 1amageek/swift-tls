@@ -5,8 +5,9 @@
 /// of recently received sequence numbers within the window.
 ///
 /// This prevents attackers from replaying old DTLS records.
-
-import Foundation
+///
+/// Embedded-clean: a pure value type over integer sequence numbers, no
+/// Foundation dependency.
 
 /// RFC 6347 §4.1.2.6 sliding window anti-replay protection.
 /// Window size is 64 bits, tracking the highest received sequence number

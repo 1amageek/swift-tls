@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "TLSWireCore", targets: ["TLSWireCore"]),
         .library(name: "DTLSWireCore", targets: ["DTLSWireCore"]),
         .library(name: "TLSRecordCore", targets: ["TLSRecordCore"]),
+        .library(name: "DTLSRecordCore", targets: ["DTLSRecordCore"]),
         .library(name: "TLSCore", targets: ["TLSCore"]),
         .library(name: "TLSRecord", targets: ["TLSRecord"]),
         .library(name: "DTLSCore", targets: ["DTLSCore"]),
@@ -64,6 +65,13 @@ let package = Package(
             path: "Sources/TLSRecordCore",
             swiftSettings: coreSettings
         ),
+        // ---- Embedded-clean DTLS record-layer types (anti-replay window, errors) ----
+        .target(
+            name: "DTLSRecordCore",
+            dependencies: [],
+            path: "Sources/DTLSRecordCore",
+            swiftSettings: coreSettings
+        ),
         // ---- Foundation adapter: keeps the existing Data-based public API ----
         .target(
             name: "TLSCore",
@@ -99,6 +107,7 @@ let package = Package(
             name: "DTLSRecord",
             dependencies: [
                 "DTLSCore",
+                "DTLSRecordCore",
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
             path: "Sources/DTLSRecord"
