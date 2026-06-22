@@ -74,29 +74,30 @@ public enum KeyShareExtension: Sendable, TLSExtensionValue {
         }
     }
 
-    /// Decode - context determines which variant
-    /// Note: Caller should use specific decode methods based on message type
-    public static func decode(from data: Data) throws -> KeyShareExtension {
-        // Default to ClientHello parsing (has 2-byte length prefix for list)
-        // ServerHello has no length prefix, just group + key_exchange
-        // HRR has just 2 bytes (NamedGroup)
+    /// The handshake message context a key_share extension was carried in. The wire
+    /// format of a key_share is ambiguous without this context, so the caller MUST
+    /// supply it rather than relying on a byte-pattern heuristic.
+    public enum MessageContext: Sendable {
+        case clientHello
+        case serverHello
+        case helloRetryRequest
+    }
 
-        // Try to detect: if data starts with a valid 2-byte length that matches remaining,
-        // it's likely ClientHello format
-        if data.count >= 2 {
-            let possibleLength = Int(data[0]) << 8 | Int(data[1])
-            if possibleLength == data.count - 2 {
-                return .clientHello(try KeyShareClientHello.decode(from: data))
-            }
-        }
-
-        // If exactly 2 bytes, it's HelloRetryRequest format (just NamedGroup)
-        if data.count == 2 {
+    /// Decode a key_share extension using the EXPLICIT message context.
+    ///
+    /// The three on-wire variants (ClientHello list, ServerHello single entry, and
+    /// HelloRetryRequest bare group) cannot be reliably distinguished by inspecting
+    /// the bytes — a previous heuristic both guessed wrong on edge cases and trapped
+    /// on a sliced `Data` (absolute indexing). The context removes the guess.
+    public static func decode(from data: Data, context: MessageContext) throws -> KeyShareExtension {
+        switch context {
+        case .clientHello:
+            return .clientHello(try KeyShareClientHello.decode(from: data))
+        case .serverHello:
+            return .serverHello(try KeyShareServerHello.decode(from: data))
+        case .helloRetryRequest:
             return .helloRetryRequest(try KeyShareHelloRetryRequest.decode(from: data))
         }
-
-        // Otherwise assume ServerHello format (group + key_exchange)
-        return .serverHello(try KeyShareServerHello.decode(from: data))
     }
 
     public static func decodeClientHello(from data: Data) throws -> KeyShareClientHello {

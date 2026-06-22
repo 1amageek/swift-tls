@@ -199,8 +199,14 @@ struct DTLSRecordLayerContractTests {
             plaintext: Data("secret".utf8)
         )
 
-        #expect(throws: (any Error).self) {
-            _ = try reader.decodeRecord(from: encoded)
+        // A record that fails AEAD authentication (wrong key) is silently discarded
+        // per RFC 6347 §4.1.2.7, not surfaced as a thrown error — so a forged record
+        // cannot abort processing of the rest of the datagram.
+        let result = try reader.decodeRecord(from: encoded)
+        if case .discarded(_, let reason) = result {
+            #expect(reason == .authenticationFailed)
+        } else {
+            Issue.record("Wrong-key decryption should be discarded, got \(result)")
         }
     }
 

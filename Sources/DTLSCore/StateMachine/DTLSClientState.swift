@@ -67,8 +67,13 @@ public struct DTLSClientContext: Sendable {
     /// Cookie from HelloVerifyRequest
     public var cookie: Data?
 
-    /// Current message sequence number
+    /// Current message sequence number for messages WE send
     public var messageSeq: UInt16 = 0
+
+    /// The next handshake message_seq we expect to RECEIVE from the peer.
+    /// Used to discard duplicates (seq < expected) and reject out-of-order future
+    /// messages (seq > expected) so the transcript is never corrupted (RFC 6347).
+    public var nextReceiveSeq: UInt16 = 0
 
     /// Key schedule
     public var keySchedule: DTLSKeySchedule?

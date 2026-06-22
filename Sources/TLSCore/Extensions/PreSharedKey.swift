@@ -152,13 +152,25 @@ public struct OfferedPsks: Sendable {
             throw TLSDecodeError.invalidFormat("PreSharedKey: no identities")
         }
 
-        // binders
+        // binders. RFC 8446 §4.2.11.2: PskBinderEntry is opaque<32..255>; the binder
+        // is an HMAC output whose length matches the hash, so it is never shorter
+        // than 32 bytes. Enforce the bounds so a malformed/short binder is rejected
+        // rather than later mishandled.
         let bindersData = try reader.readVector16()
         var bindersReader = TLSReader(data: bindersData)
         var binders: [Data] = []
         while bindersReader.hasMore {
             let binder = try bindersReader.readVector8()
+            guard binder.count >= 32 && binder.count <= 255 else {
+                throw TLSDecodeError.invalidFormat(
+                    "PreSharedKey: binder length \(binder.count) out of range 32...255"
+                )
+            }
             binders.append(binder)
+        }
+
+        guard !binders.isEmpty else {
+            throw TLSDecodeError.invalidFormat("PreSharedKey: no binders")
         }
 
         guard binders.count == identities.count else {

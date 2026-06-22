@@ -111,14 +111,24 @@ public struct DTLSRecord: Sendable, Equatable {
 
     /// Build the additional authenticated data (AAD) for AEAD
     /// AAD = epoch (2) + sequence_number (6) + content_type (1) + version (2) + length (2)
-    public func buildAAD(plaintextLength: Int) -> Data {
+    ///
+    /// - Parameter plaintextLength: The plaintext fragment length. Must be a valid
+    ///   16-bit value in `0...maxPlaintextSize`; otherwise this throws rather than
+    ///   trapping on an out-of-range `UInt16` conversion.
+    /// - Throws: `DTLSRecordError.invalidLength` if `plaintextLength` is negative or
+    ///   exceeds the maximum 16-bit record length.
+    public func buildAAD(plaintextLength: Int) throws -> Data {
+        guard plaintextLength >= 0,
+              let length16 = UInt16(exactly: plaintextLength) else {
+            throw DTLSRecordError.invalidLength(plaintextLength)
+        }
         var writer = TLSWriter()
         writer.writeUInt16(epoch)
         writer.writeUInt16(UInt16((sequenceNumber >> 32) & 0xFFFF))
         writer.writeUInt32(UInt32(sequenceNumber & 0xFFFFFFFF))
         writer.writeUInt8(contentType.rawValue)
         version.encode(writer: &writer)
-        writer.writeUInt16(UInt16(plaintextLength))
+        writer.writeUInt16(length16)
         return writer.finish()
     }
 }
@@ -131,6 +141,7 @@ public enum DTLSRecordError: Error, Sendable {
     case insufficientData
     case sequenceNumberOverflow
     case invalidEpoch
+    case invalidLength(Int)
     case encryptionFailed(String)
     case decryptionFailed(String)
 }
@@ -150,6 +161,8 @@ extension DTLSRecordError: CustomStringConvertible {
             return "Sequence number overflow"
         case .invalidEpoch:
             return "Invalid epoch"
+        case .invalidLength(let l):
+            return "Invalid record length: \(l)"
         case .encryptionFailed(let r):
             return "Encryption failed: \(r)"
         case .decryptionFailed(let r):
@@ -176,7 +189,7 @@ public enum RecordDecodeResult: Sendable {
 }
 
 /// Reason why a record was discarded
-public enum DiscardReason: Sendable {
+public enum DiscardReason: Sendable, Equatable {
     /// Record is a replay (already received)
     case replayed
 
@@ -185,4 +198,13 @@ public enum DiscardReason: Sendable {
 
     /// Record epoch does not match current read epoch (RFC 6347 §4.1)
     case epochMismatch
+
+    /// AEAD authentication failed (bad MAC / forged record), RFC 6347 §4.1.2.7.
+    /// Such records are silently discarded; the datagram loop continues.
+    case authenticationFailed
+
+    /// The encrypted fragment is malformed (too short for AEAD overhead, or the
+    /// declared plaintext length is out of range). RFC 6347 §4.1.2.7 requires a
+    /// silent discard rather than a fatal alert or a crash.
+    case malformed
 }

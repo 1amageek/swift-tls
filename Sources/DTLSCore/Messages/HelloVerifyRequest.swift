@@ -27,32 +27,73 @@ public struct HelloVerifyRequest: Sendable {
         self.cookie = cookie
     }
 
-    /// Generate a cookie based on client address and random
+    /// Build the cookie binding material for a ClientHello.
+    ///
+    /// RFC 6347 §4.2.1 requires the cookie to be bound to the client's transport
+    /// address; a robust server also binds it to the ClientHello contents so that a
+    /// cookie minted for one ClientHello cannot be replayed with a different one.
+    /// We cover `clientAddress || client_random || cipher_suites`.
+    ///
     /// - Parameters:
     ///   - clientAddress: Client's network address (IP:port)
-    ///   - secret: Server-side secret for HMAC
-    /// - Returns: A HelloVerifyRequest with computed cookie
-    public static func generate(
+    ///   - clientRandom: The 32-byte ClientHello random
+    ///   - cipherSuites: The offered cipher suites
+    /// - Returns: Concatenated binding material fed to the cookie HMAC
+    public static func bindingMaterial(
         clientAddress: Data,
-        secret: SymmetricKey
-    ) -> HelloVerifyRequest {
-        let mac = HMAC<SHA256>.authenticationCode(for: clientAddress, using: secret)
-        return HelloVerifyRequest(cookie: Data(mac))
+        clientRandom: Data,
+        cipherSuites: [DTLSCipherSuite]
+    ) -> Data {
+        var writer = TLSWriter()
+        writer.writeVector16(clientAddress)
+        writer.writeVector8(clientRandom)
+        var suitesWriter = TLSWriter()
+        for suite in cipherSuites {
+            suite.encode(writer: &suitesWriter)
+        }
+        writer.writeVector16(suitesWriter.finish())
+        return writer.finish()
     }
 
-    /// Verify a cookie
+    /// Generate a cookie bound to the ClientHello using the provided secret provider.
     /// - Parameters:
-    ///   - cookie: The cookie to verify
+    ///   - clientAddress: Client's network address (IP:port)
+    ///   - clientHello: The ClientHello whose contents the cookie is bound to
+    ///   - provider: The process-global rotating cookie secret provider
+    /// - Returns: A HelloVerifyRequest with a computed, ClientHello-bound cookie
+    public static func generate(
+        clientAddress: Data,
+        clientHello: DTLSClientHello,
+        provider: DTLSCookieSecretProvider
+    ) -> HelloVerifyRequest {
+        let material = bindingMaterial(
+            clientAddress: clientAddress,
+            clientRandom: clientHello.random,
+            cipherSuites: clientHello.cipherSuites
+        )
+        let cookie = provider.makeCookie(bindingMaterial: material)
+        return HelloVerifyRequest(cookie: cookie)
+    }
+
+    /// Verify a cookie bound to the ClientHello.
+    /// - Parameters:
+    ///   - cookie: The cookie presented by the client
     ///   - clientAddress: Client's network address
-    ///   - secret: Server-side secret
-    /// - Returns: True if the cookie is valid
+    ///   - clientHello: The ClientHello whose contents the cookie must be bound to
+    ///   - provider: The process-global rotating cookie secret provider
+    /// - Returns: True if the cookie is valid for this ClientHello and address
     public static func verifyCookie(
         _ cookie: Data,
         clientAddress: Data,
-        secret: SymmetricKey
+        clientHello: DTLSClientHello,
+        provider: DTLSCookieSecretProvider
     ) -> Bool {
-        let expected = HMAC<SHA256>.authenticationCode(for: clientAddress, using: secret)
-        return constantTimeEqual(Data(expected), cookie)
+        let material = bindingMaterial(
+            clientAddress: clientAddress,
+            clientRandom: clientHello.random,
+            cipherSuites: clientHello.cipherSuites
+        )
+        return provider.verifyCookie(cookie, bindingMaterial: material)
     }
 
     /// Encode the HelloVerifyRequest body

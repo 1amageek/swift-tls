@@ -44,15 +44,9 @@ public struct CertificateRequest: Sendable {
     public static func withDefaultSignatureAlgorithms(
         certificateRequestContext: Data = Data()
     ) -> CertificateRequest {
-        // RFC 8446: signature_algorithms extension is REQUIRED
-        let signatureAlgorithms = SignatureAlgorithmsExtension(supportedSignatureAlgorithms: [
-            .ecdsa_secp256r1_sha256,
-            .ecdsa_secp384r1_sha384,
-            .ed25519,
-            .rsa_pss_rsae_sha256,
-            .rsa_pss_rsae_sha384,
-            .rsa_pss_rsae_sha512
-        ])
+        // RFC 8446: signature_algorithms extension is REQUIRED. Advertise only
+        // schemes we can actually verify (no RSA — no RSA verifier is implemented).
+        let signatureAlgorithms = SignatureAlgorithmsExtension.default
 
         return CertificateRequest(
             certificateRequestContext: certificateRequestContext,

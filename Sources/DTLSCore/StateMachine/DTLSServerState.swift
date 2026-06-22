@@ -45,17 +45,27 @@ public struct DTLSServerContext: Sendable {
     /// Client's certificate (DER), if mutual auth
     public var clientCertificateDER: Data?
 
+    /// Whether the client's CertificateVerify signature has been verified.
+    ///
+    /// Set to `true` only after the client's proof-of-possession signature over
+    /// the handshake transcript has been validated against `clientCertificateDER`.
+    /// The handshake must not complete with a presented-but-unverified client
+    /// certificate.
+    public var clientCertificateVerified: Bool = false
+
     /// Client's ECDHE public key
     public var clientPublicKey: Data?
 
     /// Our ECDHE key pair
     public var keyExchange: KeyExchange?
 
-    /// Cookie secret for HelloVerifyRequest
-    public var cookieSecret: Data?
-
-    /// Current message sequence number
+    /// Current message sequence number for messages WE send
     public var messageSeq: UInt16 = 0
+
+    /// The next handshake message_seq we expect to RECEIVE from the peer.
+    /// Used to discard duplicates (seq < expected) and reject out-of-order future
+    /// messages (seq > expected) so the transcript is never corrupted (RFC 6347).
+    public var nextReceiveSeq: UInt16 = 0
 
     /// Key schedule
     public var keySchedule: DTLSKeySchedule?

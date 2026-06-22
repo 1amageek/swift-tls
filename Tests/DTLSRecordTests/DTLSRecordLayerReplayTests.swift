@@ -257,15 +257,88 @@ struct DTLSRecordLayerReplayTests {
             tamperedRecord[tamperedRecord.count - 5] ^= 0xFF
         }
 
-        // Tampered record should fail decryption
-        #expect(throws: (any Error).self) {
-            _ = try reader.decodeRecord(from: tamperedRecord)
+        // Tampered record should be silently discarded (RFC 6347 §4.1.2.7),
+        // not throw — a forged record must not abort datagram processing.
+        let tamperedResult = try reader.decodeRecord(from: tamperedRecord)
+        if case .discarded(_, let reason) = tamperedResult {
+            #expect(reason == .authenticationFailed, "Bad MAC should map to authenticationFailed")
+        } else {
+            Issue.record("Tampered record should be discarded, got \(tamperedResult)")
         }
 
         // Valid record should still be accepted
-        // (sequence number was not marked because decryption failed)
+        // (sequence number was not marked because authentication failed)
         let result = try reader.decodeRecord(from: validRecord)
         #expect(Self.isRecord(result), "Valid record should be accepted after tampered record failed")
+    }
+
+    // MARK: - Concurrent Replay (TOCTOU)
+
+    @Test("Concurrent decode of the same record accepts it exactly once")
+    func testConcurrentReplayAcceptedOnce() async throws {
+        let (writer, reader) = Self.makeConnectedLayers()
+
+        let encoded = try writer.encodeRecord(
+            contentType: .applicationData,
+            plaintext: Data([0xAA, 0xBB, 0xCC])
+        )
+
+        // Fire many concurrent decodes of the identical record. The check->decrypt->
+        // update transaction is atomic under the record layer's Mutex, so exactly one
+        // call may observe a fresh sequence number; every other must be discarded as a
+        // replay. A TOCTOU bug would let more than one through.
+        let attempts = 64
+        let acceptedCount = try await withThrowingTaskGroup(of: Bool.self) { group -> Int in
+            for _ in 0..<attempts {
+                group.addTask {
+                    // A replay surfaces as .discarded, never a thrown error or a
+                    // double-accept; only a fatal local decode error would throw.
+                    let result = try reader.decodeRecord(from: encoded)
+                    if case .record = result { return true }
+                    return false
+                }
+            }
+            var count = 0
+            for try await accepted in group where accepted {
+                count += 1
+            }
+            return count
+        }
+
+        #expect(acceptedCount == 1, "Exactly one concurrent decode may accept the record; got \(acceptedCount)")
+    }
+
+    @Test("Concurrent decode of distinct records accepts each exactly once")
+    func testConcurrentDistinctRecordsEachAcceptedOnce() async throws {
+        let (writer, reader) = Self.makeConnectedLayers()
+
+        // Encode 50 distinct records, then replay each one twice concurrently.
+        var encoded: [Data] = []
+        for i in 0..<50 {
+            encoded.append(try writer.encodeRecord(
+                contentType: .applicationData,
+                plaintext: Data([UInt8(i)])
+            ))
+        }
+
+        let acceptedCount = try await withThrowingTaskGroup(of: Bool.self) { group -> Int in
+            for record in encoded {
+                for _ in 0..<2 {
+                    group.addTask {
+                        let result = try reader.decodeRecord(from: record)
+                        if case .record = result { return true }
+                        return false
+                    }
+                }
+            }
+            var count = 0
+            for try await accepted in group where accepted {
+                count += 1
+            }
+            return count
+        }
+
+        #expect(acceptedCount == 50, "Each distinct record must be accepted exactly once; got \(acceptedCount)")
     }
 
     // MARK: - Plaintext Records (Epoch 0)

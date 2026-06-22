@@ -628,8 +628,23 @@ public struct X509Validator: Sendable {
             return
         }
 
+        // A required EKU was configured. If the certificate carries NO Extended Key
+        // Usage extension at all:
+        //   - In strict (WebPKI) mode it does not satisfy the requirement — treat the
+        //     absence as a failure rather than silently accepting it (RFC 5280).
+        //   - In self-signed mode (`allowSelfSigned`), certificates legitimately omit
+        //     EKU (e.g. libp2p binds peer identity via a custom certificate extension,
+        //     not via EKU), so an absent EKU is permitted.
+        // An EKU that IS present is strictly matched below regardless of mode: a
+        // certificate that declares EKUs must include the required one.
         guard let eku = certificate.extendedKeyUsage else {
-            return
+            if options.allowSelfSigned {
+                return
+            }
+            throw X509Error.invalidExtendedKeyUsage(
+                required: requiredEKU.oid,
+                found: []
+            )
         }
 
         // Map RequiredEKU to the corresponding ExtendedKeyUsage.Usage

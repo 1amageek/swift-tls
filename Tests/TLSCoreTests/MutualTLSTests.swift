@@ -414,9 +414,9 @@ struct MutualTLSTests {
         // The client's signing key scheme must have been in the server's offered
         // signature algorithms from CertificateRequest. The handshake would have
         // failed with signatureVerificationFailed if not.
-        // CertificateRequest.withDefaultSignatureAlgorithms() includes:
-        //   ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384, ed25519, rsa_pss_*
-        // Our client key is P-256 (ecdsa_secp256r1_sha256), which is in the list.
+        // CertificateRequest.withDefaultSignatureAlgorithms() includes the schemes
+        // we can actually verify: ecdsa_secp256r1_sha256, ecdsa_secp384r1_sha384,
+        // ed25519. Our client key is P-256 (ecdsa_secp256r1_sha256), in the list.
         #expect(clientKey.scheme == .ecdsa_secp256r1_sha256)
     }
 }

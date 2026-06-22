@@ -21,14 +21,16 @@ public struct SignatureAlgorithmsExtension: Sendable, TLSExtensionValue {
         self.supportedSignatureAlgorithms = supportedSignatureAlgorithms
     }
 
-    /// Default signature algorithms for TLS 1.3
+    /// Default signature algorithms for TLS 1.3.
+    ///
+    /// Only schemes this implementation can actually verify are advertised. RSA-PSS
+    /// is intentionally excluded because no RSA verifier is implemented — advertising
+    /// it would create a wire/capability mismatch (a peer could pick a scheme whose
+    /// signature we cannot check).
     public static var `default`: SignatureAlgorithmsExtension {
         SignatureAlgorithmsExtension(supportedSignatureAlgorithms: [
             .ecdsa_secp256r1_sha256,
             .ecdsa_secp384r1_sha384,
-            .rsa_pss_rsae_sha256,
-            .rsa_pss_rsae_sha384,
-            .rsa_pss_rsae_sha512,
             .ed25519
         ])
     }

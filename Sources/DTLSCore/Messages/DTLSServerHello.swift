@@ -26,14 +26,20 @@ public struct DTLSServerHello: Sendable {
     /// Selected cipher suite
     public let cipherSuite: DTLSCipherSuite
 
+    /// - Throws: A secure-random error if `random` is not supplied and the system
+    ///   CSPRNG fails. RNG failure is surfaced, never swallowed.
     public init(
         serverVersion: DTLSVersion = .v1_2,
         random: Data? = nil,
         sessionID: Data = Data(),
         cipherSuite: DTLSCipherSuite
-    ) {
+    ) throws {
         self.serverVersion = serverVersion
-        self.random = random ?? (try! secureRandomBytes(count: 32))
+        if let random {
+            self.random = random
+        } else {
+            self.random = try secureRandomBytes(count: 32)
+        }
         self.sessionID = sessionID
         self.cipherSuite = cipherSuite
     }
@@ -71,7 +77,7 @@ public struct DTLSServerHello: Sendable {
         _ = try reader.readUInt8() // compression_method
 
         // Skip extensions parsing for now
-        return DTLSServerHello(
+        return try DTLSServerHello(
             serverVersion: version,
             random: random,
             sessionID: sessionID,

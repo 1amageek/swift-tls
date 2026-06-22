@@ -60,8 +60,8 @@ struct DTLSConnectionErrorPathTests {
         }
     }
 
-    @Test("Tampered ciphertext after handshake throws")
-    func tamperedCiphertextAfterHandshakeThrows() throws {
+    @Test("Tampered ciphertext after handshake is discarded, not fatal")
+    func tamperedCiphertextAfterHandshakeIsDiscarded() throws {
         let (client, server) = try performHandshake()
 
         let plaintext = Data("secret message".utf8)
@@ -73,9 +73,14 @@ struct DTLSConnectionErrorPathTests {
             encrypted[tamperOffset] ^= 0xFF
         }
 
-        #expect(throws: (any Error).self) {
-            _ = try server.processReceivedDatagram(encrypted)
-        }
+        // RFC 6347 §4.1.2.7: a record that fails AEAD authentication is silently
+        // discarded at the wire level and must NOT throw or terminate the connection.
+        // The anomaly is surfaced so it is observable but non-fatal.
+        let output = try server.processReceivedDatagram(encrypted)
+        #expect(output.applicationData.isEmpty, "Forged record must not yield plaintext")
+        #expect(output.anomalies.contains(.authenticationFailed),
+                "Bad-MAC record should surface an authenticationFailed anomaly")
+        #expect(!server.isClosed, "Connection must remain open after a forged record")
     }
 
     @Test("Connection remains usable after processing corrupted data")
@@ -88,23 +93,77 @@ struct DTLSConnectionErrorPathTests {
         let out1 = try server.processReceivedDatagram(enc1)
         #expect(out1.applicationData == msg1)
 
-        // Send corrupted data
+        // Send corrupted data — discarded, not fatal (RFC 6347 §4.1.2.7).
         var corrupted = try client.writeApplicationData(Data("will be corrupted".utf8))
         if corrupted.count > 20 {
             corrupted[20] ^= 0xFF
         }
-        do {
-            _ = try server.processReceivedDatagram(corrupted)
-            Issue.record("Expected error from corrupted data")
-        } catch {
-            // Expected — error should not corrupt state
-        }
+        let corruptedOut = try server.processReceivedDatagram(corrupted)
+        #expect(corruptedOut.applicationData.isEmpty)
+        #expect(corruptedOut.anomalies.contains(.authenticationFailed))
 
         // Send valid data again — should still work
         let msg3 = Data("message 3".utf8)
         let enc3 = try client.writeApplicationData(msg3)
         let out3 = try server.processReceivedDatagram(enc3)
         #expect(out3.applicationData == msg3, "Connection should remain usable after error")
+    }
+
+    @Test("Bad-MAC record does not abort a later valid record in the same datagram")
+    func badMacRecordDoesNotAbortLaterValidRecord() throws {
+        let (client, server) = try performHandshake()
+
+        // Build a datagram with TWO records: a forged one followed by a valid one.
+        let goodPayload = Data("valid after bad".utf8)
+        var badRecord = try client.writeApplicationData(Data("forged".utf8))
+        // Corrupt the ciphertext of the first record so it fails AEAD authentication.
+        let tamperOffset = 13 + 8 + 2
+        if tamperOffset < badRecord.count {
+            badRecord[tamperOffset] ^= 0xFF
+        }
+        let goodRecord = try client.writeApplicationData(goodPayload)
+
+        var datagram = Data()
+        datagram.append(badRecord)
+        datagram.append(goodRecord)
+
+        let output = try server.processReceivedDatagram(datagram)
+        #expect(output.anomalies.contains(.authenticationFailed),
+                "The forged record should be reported as discarded")
+        #expect(output.applicationData == goodPayload,
+                "The valid record following a bad-MAC record must still be processed")
+        #expect(!server.isClosed)
+    }
+
+    @Test("Short epoch>0 record is discarded without trapping")
+    func shortEncryptedRecordIsDiscarded() throws {
+        let (client, server) = try performHandshake()
+
+        // Craft a record at the active epoch (1, after a completed handshake) whose
+        // fragment is far shorter than the AEAD overhead (8-byte explicit nonce +
+        // 16-byte tag = 24 bytes). This previously trapped while building AAD
+        // (UInt16 of a negative plaintext length).
+        let shortFragment = Data(repeating: 0x00, count: 10) // < 24 bytes
+        let record = DTLSRecord(
+            contentType: .applicationData,
+            epoch: 1,
+            sequenceNumber: 42,
+            fragment: shortFragment
+        )
+        let datagram = record.encode()
+
+        // Must not crash; the record is discarded as malformed and no plaintext emitted.
+        let output = try server.processReceivedDatagram(datagram)
+        #expect(output.applicationData.isEmpty)
+        #expect(output.anomalies.contains(.malformed),
+                "A sub-overhead encrypted record should be reported as malformed")
+        #expect(!server.isClosed)
+
+        // Connection still usable afterwards.
+        let msg = Data("ok".utf8)
+        let enc = try client.writeApplicationData(msg)
+        let out = try server.processReceivedDatagram(enc)
+        #expect(out.applicationData == msg)
     }
 
     // MARK: - Contract B: Pre-Handshake Operations

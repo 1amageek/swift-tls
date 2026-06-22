@@ -60,7 +60,7 @@ public struct CertificateVerify: Sendable {
         var reader = TLSReader(data: data)
         let hashByte = try reader.readUInt8()
         let sigByte = try reader.readUInt8()
-        let scheme = SignatureScheme.from(hash: hashByte, signature: sigByte)
+        let scheme = try SignatureScheme.from(hash: hashByte, signature: sigByte)
         let signature = try reader.readVector16()
         return CertificateVerify(signatureScheme: scheme, signature: signature)
     }

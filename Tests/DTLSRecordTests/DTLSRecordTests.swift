@@ -56,7 +56,7 @@ struct DTLSRecordCodecTests {
     }
 
     @Test("AAD construction")
-    func aadConstruction() {
+    func aadConstruction() throws {
         let record = DTLSRecord(
             contentType: .applicationData,
             epoch: 1,
@@ -64,9 +64,29 @@ struct DTLSRecordCodecTests {
             fragment: Data()
         )
 
-        let aad = record.buildAAD(plaintextLength: 100)
+        let aad = try record.buildAAD(plaintextLength: 100)
         // epoch (2) + seq_num (6) + content_type (1) + version (2) + length (2) = 13 bytes
         #expect(aad.count == 13)
+    }
+
+    @Test("AAD construction rejects out-of-range plaintext length")
+    func aadConstructionRejectsInvalidLength() {
+        let record = DTLSRecord(
+            contentType: .applicationData,
+            epoch: 1,
+            sequenceNumber: 5,
+            fragment: Data()
+        )
+
+        // A negative length (e.g. from a sub-overhead fragment) must throw a typed
+        // error rather than trapping on UInt16(exactly:).
+        #expect(throws: DTLSRecordError.self) {
+            _ = try record.buildAAD(plaintextLength: -8)
+        }
+        // A length above the 16-bit record limit must also be rejected.
+        #expect(throws: DTLSRecordError.self) {
+            _ = try record.buildAAD(plaintextLength: 70000)
+        }
     }
 }
 

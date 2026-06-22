@@ -39,6 +39,26 @@ import TLSCore
 
 // MARK: - Output Type
 
+/// A record-level anomaly observed while processing a datagram.
+///
+/// RFC 6347 §4.1.2.7 mandates that bad records be silently discarded at the wire
+/// level (no fatal alert), and DTLS robustness requires that one bad record not
+/// abort the remaining records in the datagram. These anomalies are therefore
+/// non-fatal, but they are surfaced (not swallowed) so callers can log, count, or
+/// react to them.
+public enum DTLSRecordAnomaly: Sendable, Equatable {
+    /// A record failed AEAD authentication (bad MAC / forged record).
+    case authenticationFailed
+    /// A record was malformed (too short for AEAD overhead, or invalid length).
+    case malformed
+    /// A record was a replay (already received within the window).
+    case replayed
+    /// A record's sequence number was too old (outside the replay window).
+    case tooOld
+    /// An alert record could not be decoded.
+    case malformedAlert
+}
+
 /// Output from processing a received datagram
 public struct DTLSConnectionOutput: Sendable {
     /// Encoded DTLS datagrams to send to the peer
@@ -53,16 +73,22 @@ public struct DTLSConnectionOutput: Sendable {
     /// Alert received from peer (if any)
     public let receivedAlert: TLSAlert?
 
+    /// Non-fatal record-level anomalies observed while processing the datagram.
+    /// Surfaced rather than swallowed so callers can log or count them.
+    public let anomalies: [DTLSRecordAnomaly]
+
     public init(
         datagramsToSend: [Data] = [],
         applicationData: Data = Data(),
         handshakeComplete: Bool = false,
-        receivedAlert: TLSAlert? = nil
+        receivedAlert: TLSAlert? = nil,
+        anomalies: [DTLSRecordAnomaly] = []
     ) {
         self.datagramsToSend = datagramsToSend
         self.applicationData = applicationData
         self.handshakeComplete = handshakeComplete
         self.receivedAlert = receivedAlert
+        self.anomalies = anomalies
     }
 }
 
@@ -100,6 +126,7 @@ extension DTLSConnectionError: CustomStringConvertible {
 public final class DTLSConnection: Sendable {
     private let certificate: DTLSCertificate
     private let supportedCipherSuites: [DTLSCipherSuite]
+    private let requireClientCertificate: Bool
     private let recordLayer: DTLSRecordLayer
     private let flightController: FlightController
     private let state: Mutex<ConnectionState>
@@ -115,17 +142,31 @@ public final class DTLSConnection: Sendable {
         var remoteCertificateDER: Data?
         var negotiatedCipherSuite: DTLSCipherSuite?
 
+        // Reassembly buffer for fragmented handshake messages (RFC 6347 §4.2.3).
+        // A handshake message may be split across datagrams, so this state must
+        // persist between `processReceivedDatagram` calls.
+        var reassembly: HandshakeReassemblyBuffer = HandshakeReassemblyBuffer()
+
         // Connection closure state
         var closed: Bool = false
         var fatalError: DTLSConnectionError?
     }
 
+    /// - Parameters:
+    ///   - certificate: This endpoint's DTLS certificate.
+    ///   - supportedCipherSuites: Cipher suites offered/accepted.
+    ///   - requireClientCertificate: When `true` and acting as the server, the
+    ///     handshake fails unless the client presents a certificate and proves
+    ///     possession of its private key (mutual authentication). Peer-authenticated
+    ///     deployments (WebRTC / libp2p) must set this to `true`.
     public init(
         certificate: DTLSCertificate,
-        supportedCipherSuites: [DTLSCipherSuite] = [.ecdheEcdsaWithAes128GcmSha256]
+        supportedCipherSuites: [DTLSCipherSuite] = [.ecdheEcdsaWithAes128GcmSha256],
+        requireClientCertificate: Bool = false
     ) {
         self.certificate = certificate
         self.supportedCipherSuites = supportedCipherSuites
+        self.requireClientCertificate = requireClientCertificate
         self.recordLayer = DTLSRecordLayer()
         self.flightController = FlightController()
         self.state = Mutex(ConnectionState())
@@ -151,11 +192,12 @@ public final class DTLSConnection: Sendable {
                     supportedCipherSuites: supportedCipherSuites
                 )
                 s.clientHandler = handler
-                return handler.startHandshake()
+                return try handler.startHandshake()
             } else {
                 let handler = DTLSServerHandshakeHandler(
                     certificate: certificate,
-                    supportedCipherSuites: supportedCipherSuites
+                    supportedCipherSuites: supportedCipherSuites,
+                    requireClientCertificate: requireClientCertificate
                 )
                 s.serverHandler = handler
                 return []
@@ -204,6 +246,7 @@ public final class DTLSConnection: Sendable {
         var applicationData = Data()
         var handshakeComplete = false
         var receivedAlert: TLSAlert?
+        var anomalies: [DTLSRecordAnomaly] = []
 
         // Cancel pending retransmission on receiving any data
         flightController.responseReceived()
@@ -228,40 +271,84 @@ public final class DTLSConnection: Sendable {
                 // No more complete records in this datagram
                 break recordLoop
 
-            case .discarded(let consumed, _):
-                // Record was replayed or too old - skip and continue to next record
+            case .discarded(let consumed, let reason):
+                // RFC 6347 §4.1.2.7: a discarded record (replay, too old, bad MAC, or
+                // malformed) is silently dropped at the wire level, but the datagram
+                // loop continues so subsequent valid records are still processed.
+                // Surface the anomaly so it is not swallowed.
+                switch reason {
+                case .replayed:
+                    anomalies.append(.replayed)
+                case .tooOld:
+                    anomalies.append(.tooOld)
+                case .authenticationFailed:
+                    anomalies.append(.authenticationFailed)
+                case .malformed:
+                    anomalies.append(.malformed)
+                case .epochMismatch:
+                    break // Expected during rekey; not an anomaly worth surfacing.
+                }
                 offset += consumed
                 continue recordLoop
             }
 
             switch record.contentType {
             case .handshake:
-                let actions: [DTLSHandshakeAction]
-
-                // Route ClientHello to the dedicated server method
-                if let firstByte = record.fragment.first,
-                   firstByte == DTLSHandshakeType.clientHello.rawValue,
-                   !isClient,
-                   let handler = serverHandler {
-                    actions = try handler.processClientHello(
-                        record.fragment,
-                        clientAddress: remoteAddress
+                // RFC 6347 §4.2.3: a single record may pack multiple handshake
+                // messages, and a single handshake message may be split into
+                // fragments across records. Parse every fragment in the record
+                // and feed each through the per-connection reassembly buffer.
+                // `addFragment` returns a COMPLETE message (canonical, with
+                // fragment_offset=0 / fragment_length=length) once all of its
+                // fragments have arrived, or `nil` while more are expected. A
+                // non-fragmented message reassembles to byte-identical bytes, so
+                // the transcript hash sees the same input as before.
+                let completeMessages: [Data] = try state.withLock { s in
+                    let fragments = try HandshakeReassemblyBuffer.parseMessages(
+                        from: record.fragment
                     )
-                } else if isClient, let handler = clientHandler {
-                    actions = try handler.processHandshakeMessage(record.fragment)
-                } else if let handler = serverHandler {
-                    actions = try handler.processHandshakeMessage(record.fragment)
-                } else {
-                    throw DTLSConnectionError.handshakeNotStarted
+                    var assembled: [Data] = []
+                    for fragment in fragments {
+                        if let message = try s.reassembly.addFragment(
+                            header: fragment.header,
+                            body: fragment.body
+                        ) {
+                            assembled.append(message)
+                        }
+                    }
+                    return assembled
                 }
 
-                let datagrams = try processActions(actions)
-                allDatagrams.append(contentsOf: datagrams)
+                // Dispatch each complete message in wire order. Each is recorded
+                // into the transcript exactly once by the handler.
+                for message in completeMessages {
+                    let actions: [DTLSHandshakeAction]
 
-                // Check if handshake just completed
-                if actions.contains(where: { if case .handshakeComplete = $0 { return true } else { return false } }) {
-                    handshakeComplete = true
-                    finalizeHandshake(isClient: isClient, clientHandler: clientHandler, serverHandler: serverHandler)
+                    // Route ClientHello to the dedicated server method.
+                    if let firstByte = message.first,
+                       firstByte == DTLSHandshakeType.clientHello.rawValue,
+                       !isClient,
+                       let handler = serverHandler {
+                        actions = try handler.processClientHello(
+                            message,
+                            clientAddress: remoteAddress
+                        )
+                    } else if isClient, let handler = clientHandler {
+                        actions = try handler.processHandshakeMessage(message)
+                    } else if let handler = serverHandler {
+                        actions = try handler.processHandshakeMessage(message)
+                    } else {
+                        throw DTLSConnectionError.handshakeNotStarted
+                    }
+
+                    let datagrams = try processActions(actions)
+                    allDatagrams.append(contentsOf: datagrams)
+
+                    // Check if handshake just completed
+                    if actions.contains(where: { if case .handshakeComplete = $0 { return true } else { return false } }) {
+                        handshakeComplete = true
+                        finalizeHandshake(isClient: isClient, clientHandler: clientHandler, serverHandler: serverHandler)
+                    }
                 }
 
             case .changeCipherSpec:
@@ -293,7 +380,8 @@ public final class DTLSConnection: Sendable {
                             datagramsToSend: allDatagrams,
                             applicationData: applicationData,
                             handshakeComplete: handshakeComplete,
-                            receivedAlert: alert
+                            receivedAlert: alert,
+                            anomalies: anomalies
                         )
                     } else if alert.level == .fatal {
                         let err = DTLSConnectionError.fatalProtocolError(alert.alertDescription.description)
@@ -303,12 +391,15 @@ public final class DTLSConnection: Sendable {
                             datagramsToSend: allDatagrams,
                             applicationData: applicationData,
                             handshakeComplete: handshakeComplete,
-                            receivedAlert: alert
+                            receivedAlert: alert,
+                            anomalies: anomalies
                         )
                     }
                 } catch {
-                    // Malformed alert received - this is a protocol violation but we don't
-                    // crash the connection. The record is discarded per DTLS robustness principle.
+                    // Malformed alert received - this is a protocol violation. We do not
+                    // crash the connection and the record is discarded per DTLS robustness,
+                    // but the anomaly is surfaced (not swallowed) so callers can observe it.
+                    anomalies.append(.malformedAlert)
                 }
             }
         }
@@ -323,7 +414,8 @@ public final class DTLSConnection: Sendable {
             datagramsToSend: allDatagrams,
             applicationData: applicationData,
             handshakeComplete: handshakeComplete,
-            receivedAlert: receivedAlert
+            receivedAlert: receivedAlert,
+            anomalies: anomalies
         )
     }
 

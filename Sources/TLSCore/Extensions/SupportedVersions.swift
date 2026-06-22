@@ -32,11 +32,22 @@ public enum SupportedVersionsExtension: Sendable, TLSExtensionValue {
         }
     }
 
-    public static func decode(from data: Data) throws -> SupportedVersionsExtension {
-        // Distinguish by length: ClientHello has 1-byte length prefix, ServerHello is exactly 2 bytes
-        if data.count == 2 {
+    /// The handshake message context a supported_versions extension was carried in.
+    public enum MessageContext: Sendable {
+        case clientHello
+        case serverHello
+    }
+
+    /// Decode a supported_versions extension using the EXPLICIT message context.
+    ///
+    /// The ClientHello variant carries a length-prefixed list while the
+    /// ServerHello/HelloRetryRequest variant carries a single 2-byte version.
+    /// Requiring the context avoids guessing from the byte length.
+    public static func decode(from data: Data, context: MessageContext) throws -> SupportedVersionsExtension {
+        switch context {
+        case .serverHello:
             return .serverHello(try SupportedVersionsServerHello.decode(from: data))
-        } else {
+        case .clientHello:
             return .clientHello(try SupportedVersionsClientHello.decode(from: data))
         }
     }

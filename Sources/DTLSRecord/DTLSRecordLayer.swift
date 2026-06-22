@@ -17,6 +17,16 @@ import DTLSCore
 
 /// DTLS record layer managing epoch/sequence and encryption state
 public final class DTLSRecordLayer: Sendable {
+    /// Explicit nonce length carried in each AEAD record (epoch + sequence prefix).
+    private static let explicitNonceSize = 8
+    /// AES-GCM authentication tag length.
+    private static let aeadTagSize = 16
+    /// Minimum size of an encrypted fragment: explicit nonce + tag (zero-length plaintext).
+    static let aeadOverhead = explicitNonceSize + aeadTagSize // 24
+
+    /// Maximum 48-bit DTLS sequence number; the layer must rekey before this wraps.
+    private static let maxSequenceNumber: UInt64 = (1 << 48) - 1
+
     private let state: Mutex<RecordLayerState>
 
     private struct RecordLayerState: Sendable {
@@ -70,7 +80,13 @@ public final class DTLSRecordLayer: Sendable {
         contentType: DTLSContentType,
         plaintext: Data
     ) throws -> Data {
-        let (epoch, seqNum, key, fixedIV) = state.withLock { s -> (UInt16, UInt64, SymmetricKey?, Data?) in
+        let (epoch, seqNum, key, fixedIV) = try state.withLock { s -> (UInt16, UInt64, SymmetricKey?, Data?) in
+            // RFC 6347 §4.1: the 48-bit per-epoch sequence number must never wrap.
+            // Refuse to emit a record once the space is exhausted; the caller must
+            // rekey (advance the epoch) rather than silently reusing a nonce.
+            guard s.writeSequenceNumber <= Self.maxSequenceNumber else {
+                throw DTLSRecordError.sequenceNumberOverflow
+            }
             let result = (s.writeEpoch, s.writeSequenceNumber, s.writeKey, s.writeFixedIV)
             s.writeSequenceNumber += 1
             return result
@@ -88,7 +104,7 @@ public final class DTLSRecordLayer: Sendable {
 
         if let key, let fixedIV {
             // Encrypted record
-            let aad = record.buildAAD(plaintextLength: plaintext.count)
+            let aad = try record.buildAAD(plaintextLength: plaintext.count)
             let encrypted = try DTLSRecordCryptor.seal(
                 plaintext: plaintext,
                 key: key,
@@ -123,55 +139,72 @@ public final class DTLSRecordLayer: Sendable {
         }
 
         if let key, let fixedIV, record.epoch > 0 {
-            // For encrypted records: check replay window BEFORE decryption (preliminary check)
-            // but only UPDATE the window AFTER successful decryption (RFC 6347 §4.1.2.6)
-            let replayCheckResult = state.withLock { s -> DiscardReason? in
-                // Preliminary check: would this sequence number be accepted?
-                // Don't mark as received yet - just check
-                if !s.replayWindow.isInitialized {
-                    return nil  // First packet, will be accepted
-                }
+            // Validate the fragment before touching the replay window or building AAD.
+            // A short fragment cannot carry the AEAD overhead (8-byte explicit nonce +
+            // 16-byte tag); RFC 6347 §4.1.2.7 requires a silent discard, never a crash.
+            guard record.fragment.count >= Self.aeadOverhead else {
+                return .discarded(consumed: consumed, reason: .malformed)
+            }
+            let plaintextLength = record.fragment.count - Self.aeadOverhead
+            guard plaintextLength <= DTLSRecord.maxPlaintextSize else {
+                return .discarded(consumed: consumed, reason: .malformed)
+            }
+
+            // RFC 6347 §4.1.2.6: the replay check, the AEAD authentication, and the
+            // window update must be one atomic transaction so a concurrent replay
+            // cannot both pass the preliminary check and update the window twice.
+            // AEAD is CPU-only (no suspension), so it is permitted under the Mutex.
+            return state.withLock { s -> RecordDecodeResult in
                 let seqNum = record.sequenceNumber
-                let highest = s.replayWindow.currentHighest
-                if seqNum > highest {
-                    return nil  // New highest, will be accepted
+
+                // Preliminary replay check (no state mutation yet).
+                if s.replayWindow.isInitialized {
+                    let highest = s.replayWindow.currentHighest
+                    if seqNum <= highest {
+                        let diff = highest - seqNum
+                        if diff >= AntiReplayWindow.windowSize {
+                            return .discarded(consumed: consumed, reason: .tooOld)
+                        }
+                        if s.replayWindow.isReceived(sequenceNumber: seqNum) {
+                            return .discarded(consumed: consumed, reason: .replayed)
+                        }
+                    }
                 }
-                let diff = highest - seqNum
-                if diff >= AntiReplayWindow.windowSize {
-                    return .tooOld  // Too old
+
+                // Build AAD; an out-of-range length is a malformed record, not a fatal
+                // local error, so map it to a discard.
+                let aad: Data
+                do {
+                    aad = try record.buildAAD(plaintextLength: plaintextLength)
+                } catch {
+                    return .discarded(consumed: consumed, reason: .malformed)
                 }
-                // Check if already received (without modifying state)
-                if s.replayWindow.isReceived(sequenceNumber: seqNum) {
-                    return .replayed
+
+                // Authenticate + decrypt. A bad MAC is a forged/corrupt record:
+                // discard it and let the datagram loop continue (RFC 6347 §4.1.2.7).
+                let plaintext: Data
+                do {
+                    plaintext = try DTLSRecordCryptor.open(
+                        ciphertext: record.fragment,
+                        key: key,
+                        fixedIV: fixedIV,
+                        additionalData: aad
+                    )
+                } catch {
+                    return .discarded(consumed: consumed, reason: .authenticationFailed)
                 }
-                return nil
+
+                // Authentication succeeded: now commit the window update. If the window
+                // rejects the sequence here (lost a concurrent race), surface it as a
+                // replay discard rather than silently ignoring the result.
+                guard s.replayWindow.shouldAccept(sequenceNumber: seqNum) else {
+                    return .discarded(consumed: consumed, reason: .replayed)
+                }
+
+                var decryptedRecord = record
+                decryptedRecord.fragment = plaintext
+                return .record(decryptedRecord, consumed: consumed)
             }
-
-            if let discardReason = replayCheckResult {
-                // Silently discard replayed/too-old records (RFC 6347 §4.1.2.6)
-                // Return consumed bytes so caller can continue to next record
-                return .discarded(consumed: consumed, reason: discardReason)
-            }
-
-            // Decrypt
-            let aad = record.buildAAD(
-                plaintextLength: record.fragment.count - 8 - 16 // subtract nonce and tag
-            )
-            let plaintext = try DTLSRecordCryptor.open(
-                ciphertext: record.fragment,
-                key: key,
-                fixedIV: fixedIV,
-                additionalData: aad
-            )
-
-            // Decryption succeeded - NOW update the replay window (RFC 6347 §4.1.2.6)
-            state.withLock { s in
-                _ = s.replayWindow.shouldAccept(sequenceNumber: record.sequenceNumber)
-            }
-
-            var decryptedRecord = record
-            decryptedRecord.fragment = plaintext
-            return .record(decryptedRecord, consumed: consumed)
         }
 
         // Unencrypted records (epoch 0) don't use replay protection

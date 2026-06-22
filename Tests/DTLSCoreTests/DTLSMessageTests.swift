@@ -95,7 +95,7 @@ struct DTLSMessageTests {
 
     @Test("ClientHello encoding/decoding")
     func clientHelloRoundtrip() throws {
-        let original = DTLSClientHello(
+        let original = try DTLSClientHello(
             cipherSuites: [.ecdheEcdsaWithAes128GcmSha256],
             supportedGroups: [.secp256r1],
             signatureAlgorithms: [.ecdsa_secp256r1_sha256]
@@ -115,7 +115,7 @@ struct DTLSMessageTests {
     @Test("ClientHello with cookie")
     func clientHelloWithCookie() throws {
         let cookie = Data(repeating: 0xFF, count: 32)
-        let original = DTLSClientHello(
+        let original = try DTLSClientHello(
             cookie: cookie,
             cipherSuites: [.ecdheEcdsaWithAes128GcmSha256]
         )
@@ -130,7 +130,7 @@ struct DTLSMessageTests {
 
     @Test("ServerHello encoding/decoding")
     func serverHelloRoundtrip() throws {
-        let original = DTLSServerHello(cipherSuite: .ecdheEcdsaWithAes128GcmSha256)
+        let original = try DTLSServerHello(cipherSuite: .ecdheEcdsaWithAes128GcmSha256)
 
         let encoded = original.encode()
         let decoded = try DTLSServerHello.decode(from: encoded)
@@ -228,5 +228,40 @@ struct DTLSMessageTests {
 
         let decoded = try ServerHelloDone.decode(from: encoded)
         _ = decoded
+    }
+
+    // MARK: - SignatureScheme.from (no silent default)
+
+    @Test("SignatureScheme.from rejects an unknown (hash, signature) pair")
+    func signatureSchemeFromRejectsUnknown() {
+        // 0xFFFF is not a defined SignatureScheme; it must throw, not default to
+        // ECDSA-P256-SHA256.
+        #expect(throws: DTLSError.self) {
+            _ = try SignatureScheme.from(hash: 0xFF, signature: 0xFF)
+        }
+    }
+
+    @Test("SignatureScheme.from maps a known pair correctly")
+    func signatureSchemeFromMapsKnown() throws {
+        // ecdsa_secp256r1_sha256 == 0x0403 → hash 0x04, signature 0x03.
+        let scheme = try SignatureScheme.from(hash: 0x04, signature: 0x03)
+        #expect(scheme == .ecdsa_secp256r1_sha256)
+    }
+
+    @Test("ServerKeyExchange.decode rejects an unknown signature scheme")
+    func serverKeyExchangeRejectsUnknownScheme() {
+        // Build a minimal ECDHE ServerKeyExchange body with an unknown sig scheme.
+        var writer = TLSWriter()
+        writer.writeUInt8(3)            // curve_type: named_curve
+        writer.writeUInt16(NamedGroup.secp256r1.rawValue)
+        writer.writeVector8(Data(repeating: 0x04, count: 65)) // public key
+        writer.writeUInt8(0xFF)        // hash byte (unknown)
+        writer.writeUInt8(0xFF)        // signature byte (unknown)
+        writer.writeVector16(Data(repeating: 0x00, count: 8)) // signature
+        let body = writer.finish()
+
+        #expect(throws: DTLSError.self) {
+            _ = try ServerKeyExchange.decode(from: body)
+        }
     }
 }

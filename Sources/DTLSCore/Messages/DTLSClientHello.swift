@@ -40,6 +40,9 @@ public struct DTLSClientHello: Sendable {
     /// Supported signature algorithms
     public let signatureAlgorithms: [TLSCore.SignatureScheme]
 
+    /// - Throws: A secure-random error if `random` is not supplied and the system
+    ///   CSPRNG fails. RNG failure is never swallowed; the caller decides how to
+    ///   handle it.
     public init(
         clientVersion: DTLSVersion = .v1_2,
         random: Data? = nil,
@@ -48,9 +51,13 @@ public struct DTLSClientHello: Sendable {
         cipherSuites: [DTLSCipherSuite] = [.ecdheEcdsaWithAes128GcmSha256],
         supportedGroups: [TLSCore.NamedGroup] = [.secp256r1],
         signatureAlgorithms: [TLSCore.SignatureScheme] = [.ecdsa_secp256r1_sha256]
-    ) {
+    ) throws {
         self.clientVersion = clientVersion
-        self.random = random ?? (try! secureRandomBytes(count: 32))
+        if let random {
+            self.random = random
+        } else {
+            self.random = try secureRandomBytes(count: 32)
+        }
         self.sessionID = sessionID
         self.cookie = cookie
         self.cipherSuites = cipherSuites
@@ -188,7 +195,7 @@ public struct DTLSClientHello: Sendable {
             }
         }
 
-        return DTLSClientHello(
+        return try DTLSClientHello(
             clientVersion: version,
             random: random,
             sessionID: sessionID,

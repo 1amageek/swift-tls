@@ -217,6 +217,69 @@ struct SecurityNegativeTests {
         }
     }
 
+    // MARK: - 6b. Downgrade Protection (RFC 8446 §4.1.3)
+
+    @Test("ServerHello carrying the TLS 1.2 downgrade sentinel is rejected")
+    func testDowngradeSentinelTLS12Rejected() throws {
+        var clientConfig = TLSConfiguration.client(serverName: "localhost")
+        clientConfig.expectedPeerPublicKey = TestFixture.serverSigningKey.publicKeyBytes
+        clientConfig.supportedCipherSuites = [.tls_aes_128_gcm_sha256]
+
+        let clientMachine = ClientStateMachine()
+        _ = try clientMachine.startHandshake(configuration: clientConfig, transportParameters: nil)
+
+        // ServerHello.random whose final 8 bytes are the TLS 1.2 downgrade sentinel.
+        var random = Data(repeating: 0xA5, count: TLSConstants.randomLength - 8)
+        random.append(contentsOf: ClientStateMachine.downgradeSentinelTLS12)
+
+        let keyExchange = try KeyExchange.generate(for: .x25519)
+        let serverHello = try ServerHello(
+            random: random,
+            legacySessionIDEcho: Data(),
+            cipherSuite: .tls_aes_128_gcm_sha256,
+            extensions: [
+                .supportedVersionsServer(TLSConstants.version13),
+                .keyShareServer(keyExchange.keyShareEntry())
+            ]
+        )
+
+        #expect {
+            _ = try clientMachine.processServerHello(serverHello.encode())
+        } throws: { error in
+            (error as? TLSHandshakeError) == .downgradeDetected
+        }
+    }
+
+    @Test("ServerHello carrying the TLS 1.1-or-below downgrade sentinel is rejected")
+    func testDowngradeSentinelTLS11Rejected() throws {
+        var clientConfig = TLSConfiguration.client(serverName: "localhost")
+        clientConfig.expectedPeerPublicKey = TestFixture.serverSigningKey.publicKeyBytes
+        clientConfig.supportedCipherSuites = [.tls_aes_128_gcm_sha256]
+
+        let clientMachine = ClientStateMachine()
+        _ = try clientMachine.startHandshake(configuration: clientConfig, transportParameters: nil)
+
+        var random = Data(repeating: 0x33, count: TLSConstants.randomLength - 8)
+        random.append(contentsOf: ClientStateMachine.downgradeSentinelTLS11OrBelow)
+
+        let keyExchange = try KeyExchange.generate(for: .x25519)
+        let serverHello = try ServerHello(
+            random: random,
+            legacySessionIDEcho: Data(),
+            cipherSuite: .tls_aes_128_gcm_sha256,
+            extensions: [
+                .supportedVersionsServer(TLSConstants.version13),
+                .keyShareServer(keyExchange.keyShareEntry())
+            ]
+        )
+
+        #expect {
+            _ = try clientMachine.processServerHello(serverHello.encode())
+        } throws: { error in
+            (error as? TLSHandshakeError) == .downgradeDetected
+        }
+    }
+
     // MARK: - 7. Key Update Before Handshake Completes
 
     @Test("Key update before handshake completes is rejected")

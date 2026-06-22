@@ -32,9 +32,21 @@ public enum DTLSError: Error, Sendable {
     case insufficientData(expected: Int, actual: Int)
     case fragmentationNotSupported
 
+    /// A handshake message arrived with a message_seq ahead of the next expected
+    /// one (a gap / reordering). DTLS retransmission will re-deliver it in order.
+    case outOfOrderMessage(expected: UInt16, received: UInt16)
+
+    /// A reassembled handshake message exceeds the maximum permitted size, or too
+    /// many concurrent reassemblies are in flight (DoS guard).
+    case reassemblyLimitExceeded(String)
+
     // Verify
     case verifyDataMismatch
     case signatureVerificationFailed
+
+    /// The peer was required to present a client certificate (and prove
+    /// possession of its private key) but did not.
+    case clientCertificateRequired
 
     // Flight / retransmission
     case maxRetransmissionsExceeded
@@ -76,10 +88,16 @@ extension DTLSError: CustomStringConvertible {
             return "Insufficient data: expected \(expected) bytes, got \(actual)"
         case .fragmentationNotSupported:
             return "Handshake fragmentation not supported"
+        case .outOfOrderMessage(let expected, let received):
+            return "Out-of-order handshake message: expected seq \(expected), received \(received)"
+        case .reassemblyLimitExceeded(let reason):
+            return "Handshake reassembly limit exceeded: \(reason)"
         case .verifyDataMismatch:
             return "Verify data mismatch"
         case .signatureVerificationFailed:
             return "Signature verification failed"
+        case .clientCertificateRequired:
+            return "Client certificate required but not presented or not verified"
         case .maxRetransmissionsExceeded:
             return "Maximum retransmissions exceeded"
         case .flightTimeout:

@@ -10,6 +10,18 @@ import TLSCore
 /// Reassembly buffer for fragmented DTLS handshake messages.
 public struct HandshakeReassemblyBuffer: Sendable {
 
+    /// Maximum total length (bytes) of a single handshake message we will buffer.
+    /// DTLS handshake messages (certificate chains in particular) are large but
+    /// bounded; an attacker-controlled 24-bit length field (up to ~16 MB) must not
+    /// trigger an eager allocation of that size. 64 KiB comfortably covers a typical
+    /// certificate chain while capping the per-message memory commitment.
+    public static let maxMessageLength: UInt32 = 64 * 1024
+
+    /// Maximum number of distinct messages being reassembled concurrently. Bounds
+    /// the number of buffers an attacker can force open by sending many partial
+    /// messages with distinct message_seq values.
+    public static let maxConcurrentReassemblies = 16
+
     /// A message being reassembled from fragments
     struct PendingMessage: Sendable {
         let messageType: DTLSHandshakeType
@@ -73,21 +85,36 @@ public struct HandshakeReassemblyBuffer: Sendable {
     /// - Parameters:
     ///   - header: The DTLS handshake header (contains fragment info)
     ///   - body: The fragment body data
-    /// - Returns: The complete reassembled message (header + body) if all fragments received, nil otherwise
-    public mutating func addFragment(header: DTLSHandshakeHeader, body: Data) -> Data? {
-        // Validate fragment bounds (check for overflow)
+    /// - Returns: The complete reassembled message (header + body) once all
+    ///   fragments have arrived, or `nil` while more fragments are still expected.
+    /// - Throws: `DTLSError.invalidFormat` for an unparseable/inconsistent fragment
+    ///   (no silent skip), or `DTLSError.reassemblyLimitExceeded` when the message
+    ///   length or concurrent-reassembly cap is exceeded.
+    @discardableResult
+    public mutating func addFragment(header: DTLSHandshakeHeader, body: Data) throws -> Data? {
+        // Cap the declared total length BEFORE any allocation, so an attacker cannot
+        // force a multi-megabyte eager allocation from a 24-bit length field.
+        guard header.length <= Self.maxMessageLength else {
+            throw DTLSError.reassemblyLimitExceeded(
+                "message length \(header.length) exceeds maximum \(Self.maxMessageLength)"
+            )
+        }
+
+        // Validate fragment bounds (check for overflow).
         guard header.fragmentOffset <= header.length,
               header.fragmentLength <= header.length - header.fragmentOffset else {
-            // Invalid fragment - extends beyond total length or would overflow
-            return nil
+            throw DTLSError.invalidFormat(
+                "fragment extends beyond message length (offset=\(header.fragmentOffset), len=\(header.fragmentLength), total=\(header.length))"
+            )
         }
 
         guard body.count == Int(header.fragmentLength) else {
-            // Body size doesn't match declared fragment length
-            return nil
+            throw DTLSError.invalidFormat(
+                "fragment body size \(body.count) does not match declared fragment length \(header.fragmentLength)"
+            )
         }
 
-        // Non-fragmented message: return immediately
+        // Non-fragmented message: return immediately.
         if !header.isFragmented {
             return DTLSHandshakeHeader.encodeMessage(
                 type: header.messageType,
@@ -96,28 +123,41 @@ public struct HandshakeReassemblyBuffer: Sendable {
             )
         }
 
-        // Get or create pending message
-        var message = pending[header.messageSeq] ?? PendingMessage(
-            messageType: header.messageType,
-            totalLength: header.length
-        )
-
-        // Validate consistency with existing fragments
-        guard message.messageType == header.messageType,
-              message.totalLength == header.length else {
-            // Inconsistent fragment - different type or length
-            return nil
+        // Get or create the pending message. Creating a NEW buffer is the only path
+        // that can grow concurrent reassembly state, so enforce the concurrency cap
+        // here (before allocating the per-message buffer).
+        var message: PendingMessage
+        if let existing = pending[header.messageSeq] {
+            message = existing
+        } else {
+            guard pending.count < Self.maxConcurrentReassemblies else {
+                throw DTLSError.reassemblyLimitExceeded(
+                    "concurrent reassemblies \(pending.count) reached maximum \(Self.maxConcurrentReassemblies)"
+                )
+            }
+            message = PendingMessage(
+                messageType: header.messageType,
+                totalLength: header.length
+            )
         }
 
-        // Copy fragment data into correct position
+        // Validate consistency with existing fragments.
+        guard message.messageType == header.messageType,
+              message.totalLength == header.length else {
+            throw DTLSError.invalidFormat(
+                "inconsistent fragment for message_seq \(header.messageSeq) (type/length mismatch)"
+            )
+        }
+
+        // Copy fragment data into the correct position.
         let startIndex = message.received.startIndex + Int(header.fragmentOffset)
         let endIndex = startIndex + Int(header.fragmentLength)
         message.received.replaceSubrange(startIndex..<endIndex, with: body)
 
-        // Record coverage
+        // Record coverage.
         message.coverage.append((header.fragmentOffset, header.fragmentLength))
 
-        // Check if complete
+        // Check if complete.
         if message.isComplete {
             pending.removeValue(forKey: header.messageSeq)
             return DTLSHandshakeHeader.encodeMessage(
@@ -127,9 +167,51 @@ public struct HandshakeReassemblyBuffer: Sendable {
             )
         }
 
-        // Store updated message and wait for more fragments
+        // Store the updated message and wait for more fragments.
         pending[header.messageSeq] = message
         return nil
+    }
+
+    /// Split a DTLS handshake record payload into its constituent handshake
+    /// message fragments.
+    ///
+    /// A single DTLS record may pack multiple handshake messages (each a 12-byte
+    /// header + fragment body) back to back (RFC 6347 §4.2.3). This parses them
+    /// in wire order without performing reassembly, so the caller can feed each
+    /// fragment to `addFragment` individually.
+    ///
+    /// - Parameter recordFragment: The decrypted handshake record payload.
+    /// - Returns: The parsed `(header, body)` fragments in wire order.
+    /// - Throws: `DTLSError.invalidFormat` if the payload is truncated, contains a
+    ///   trailing partial fragment, or a fragment is internally inconsistent
+    ///   (no silent skip of leftover bytes).
+    public static func parseMessages(
+        from recordFragment: Data
+    ) throws -> [(header: DTLSHandshakeHeader, body: Data)] {
+        var reader = TLSReader(data: recordFragment)
+        var messages: [(header: DTLSHandshakeHeader, body: Data)] = []
+
+        while reader.hasMore {
+            // A complete fragment requires at least the 12-byte header.
+            guard reader.remaining >= DTLSHandshakeHeader.headerSize else {
+                throw DTLSError.invalidFormat(
+                    "trailing \(reader.remaining) bytes too short for a handshake header"
+                )
+            }
+
+            let header = try DTLSHandshakeHeader.decode(reader: &reader)
+
+            guard reader.remaining >= Int(header.fragmentLength) else {
+                throw DTLSError.invalidFormat(
+                    "handshake fragment body truncated (need \(header.fragmentLength), have \(reader.remaining))"
+                )
+            }
+
+            let body = try reader.readBytes(Int(header.fragmentLength))
+            messages.append((header, body))
+        }
+
+        return messages
     }
 
     /// Clear all pending fragments (e.g., on handshake restart)

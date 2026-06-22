@@ -134,6 +134,99 @@ struct CertificateChainTests {
         return (try toX509Certificate(certificate), leafKey)
     }
 
+    /// Creates a self-signed leaf that includes an Extended Key Usage extension.
+    private static func createSelfSignedLeafWithEKU(
+        commonName: String = "eku.example.com",
+        usages: [ExtendedKeyUsage.Usage],
+        key: P256.Signing.PrivateKey = P256.Signing.PrivateKey()
+    ) throws -> X509Certificate {
+        let name = try DistinguishedName {
+            CommonName(commonName)
+            OrganizationName("Test Org")
+        }
+        let certificate = try X509.Certificate(
+            version: .v3,
+            serialNumber: Certificate.SerialNumber(),
+            publicKey: Certificate.PublicKey(key.publicKey),
+            notValidBefore: Date().addingTimeInterval(-3600),
+            notValidAfter: Date().addingTimeInterval(3600),
+            issuer: name,
+            subject: name,
+            signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: Certificate.Extensions {
+                Critical(BasicConstraints.notCertificateAuthority)
+                KeyUsage(digitalSignature: true)
+                try ExtendedKeyUsage(usages)
+            },
+            issuerPrivateKey: Certificate.PrivateKey(key)
+        )
+        return try toX509Certificate(certificate)
+    }
+
+    // MARK: - Required EKU Tests
+
+    @Test("Required EKU permits an absent EKU extension in self-signed mode")
+    func testRequiredEKUAllowsAbsentExtensionForSelfSigned() throws {
+        // createSelfSignedLeaf has no EKU extension at all. In self-signed mode
+        // (allowSelfSigned: true) — the peer-to-peer trust model used by libp2p,
+        // where identity is bound by a custom certificate extension rather than EKU —
+        // an absent EKU MUST be permitted. (Strict WebPKI mode rejects it; that path
+        // is guarded by `!allowSelfSigned` in X509Validator.verifyExtendedKeyUsage.)
+        let (cert, _) = try CertificateChainTests.createSelfSignedLeaf(
+            commonName: "no-eku.example.com",
+            dnsNames: ["no-eku.example.com"]
+        )
+
+        let options = X509ValidationOptions(
+            checkBasicConstraints: false,
+            checkKeyUsage: false,
+            checkExtendedKeyUsage: true,
+            requiredEKU: .serverAuth,
+            validateSANFormat: false,
+            allowSelfSigned: true
+        )
+        let validator = X509Validator(options: options)
+        #expect(throws: Never.self) {
+            try validator.validate(certificate: cert)
+        }
+    }
+
+    @Test("Required EKU accepts a certificate carrying the required usage")
+    func testRequiredEKUAcceptsMatchingUsage() throws {
+        let cert = try CertificateChainTests.createSelfSignedLeafWithEKU(usages: [.serverAuth])
+
+        let options = X509ValidationOptions(
+            checkBasicConstraints: false,
+            checkKeyUsage: false,
+            checkExtendedKeyUsage: true,
+            requiredEKU: .serverAuth,
+            validateSANFormat: false,
+            allowSelfSigned: true
+        )
+        let validator = X509Validator(options: options)
+        #expect(throws: Never.self) {
+            try validator.validate(certificate: cert)
+        }
+    }
+
+    @Test("Required EKU rejects a certificate whose EKU lacks the required usage")
+    func testRequiredEKURejectsWrongUsage() throws {
+        let cert = try CertificateChainTests.createSelfSignedLeafWithEKU(usages: [.clientAuth])
+
+        let options = X509ValidationOptions(
+            checkBasicConstraints: false,
+            checkKeyUsage: false,
+            checkExtendedKeyUsage: true,
+            requiredEKU: .serverAuth,
+            validateSANFormat: false,
+            allowSelfSigned: true
+        )
+        let validator = X509Validator(options: options)
+        #expect(throws: X509Error.self) {
+            try validator.validate(certificate: cert)
+        }
+    }
+
     // MARK: - Self-Signed Certificate Tests
 
     @Test("Self-signed certificate accepted when allowSelfSigned is true")

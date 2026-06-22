@@ -22,7 +22,7 @@ struct HandshakeStateMachineContractTests {
         let cert = try DTLSCertificate.generateSelfSigned()
         let client = DTLSClientHandshakeHandler(certificate: cert)
 
-        _ = client.startHandshake()
+        _ = try client.startHandshake()
         #expect(client.currentState == .waitingServerHello)
 
         // Construct a Certificate message
@@ -46,11 +46,13 @@ struct HandshakeStateMachineContractTests {
         _ = try client.processHandshakeMessage(serverFlightMessages[0])
         #expect(client.currentState == .waitingCertificate)
 
-        // Construct a ServerHelloDone message (skipping Certificate and SKE)
+        // Construct a ServerHelloDone message (skipping Certificate and SKE).
+        // Use the next expected receive seq so it passes the ordering gate and
+        // the wrong-STATE rejection is what fires.
         let shdBody = ServerHelloDone().encode()
         let shdMsg = DTLSHandshakeHeader.encodeMessage(
             type: .serverHelloDone,
-            messageSeq: 0,
+            messageSeq: client.nextExpectedReceiveSeq,
             body: shdBody
         )
 
@@ -69,11 +71,13 @@ struct HandshakeStateMachineContractTests {
         }
         #expect(client.currentState == .waitingChangeCipherSpec)
 
-        // Construct a Finished message (should only come after CCS)
+        // Construct a Finished message (should only come after CCS). Use the next
+        // expected receive seq so it passes the ordering gate and the wrong-STATE
+        // (Finished before CCS) rejection is what fires.
         let finBody = Data(repeating: 0xAA, count: 12)
         let finMsg = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: 0,
+            messageSeq: client.nextExpectedReceiveSeq,
             body: finBody
         )
 
@@ -107,11 +111,13 @@ struct HandshakeStateMachineContractTests {
         }
         #expect(server.currentState == .waitingChangeCipherSpec)
 
-        // Construct a Finished message (should not be accepted before CCS)
+        // Construct a Finished message (should not be accepted before CCS). Use the
+        // next expected receive seq so it passes the ordering gate and the
+        // wrong-STATE rejection is what fires.
         let finBody = Data(repeating: 0xBB, count: 12)
         let finMsg = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: 0,
+            messageSeq: server.nextExpectedReceiveSeq,
             body: finBody
         )
 
@@ -127,8 +133,8 @@ struct HandshakeStateMachineContractTests {
         let cert = try DTLSCertificate.generateSelfSigned()
         let server = DTLSServerHandshakeHandler(certificate: cert)
 
-        // Send initial ClientHello (no cookie) → server stores cookieSecret
-        let clientHello = DTLSClientHello(cipherSuites: [.ecdheEcdsaWithAes128GcmSha256])
+        // Send initial ClientHello (no cookie) → server replies with HelloVerifyRequest
+        let clientHello = try DTLSClientHello(cipherSuites: [.ecdheEcdsaWithAes128GcmSha256])
         let chBody = clientHello.encode()
         let chMsg = DTLSHandshakeHeader.encodeMessage(
             type: .clientHello,
@@ -139,7 +145,7 @@ struct HandshakeStateMachineContractTests {
         #expect(server.currentState == .waitingClientHelloWithCookie)
 
         // Send ClientHello with garbage cookie
-        let badClientHello = DTLSClientHello(
+        let badClientHello = try DTLSClientHello(
             cookie: Data(repeating: 0xFF, count: 32),
             cipherSuites: [.ecdheEcdsaWithAes128GcmSha256]
         )
@@ -167,7 +173,7 @@ struct HandshakeStateMachineContractTests {
         let addressB = Data([10, 0, 0, 1])
 
         // Client sends ClientHello
-        let ch1Actions = client.startHandshake()
+        let ch1Actions = try client.startHandshake()
         guard case .sendMessage(let chMsg) = ch1Actions[0] else {
             Issue.record("No ClientHello")
             return
@@ -237,11 +243,12 @@ struct HandshakeStateMachineContractTests {
         try client.processChangeCipherSpec()
         #expect(client.currentState == .waitingFinished)
 
-        // Send Finished with wrong verify_data
+        // Send Finished with wrong verify_data, at the next expected receive seq so
+        // it passes the ordering gate and the verify_data mismatch is what fires.
         let badFinished = Data(repeating: 0x00, count: 12)
         let badFinMsg = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: 0,
+            messageSeq: client.nextExpectedReceiveSeq,
             body: badFinished
         )
 
@@ -277,11 +284,12 @@ struct HandshakeStateMachineContractTests {
         try server.processChangeCipherSpec()
         #expect(server.currentState == .waitingFinished)
 
-        // Send Finished with wrong verify_data
+        // Send Finished with wrong verify_data, at the next expected receive seq so
+        // it passes the ordering gate and the verify_data mismatch is what fires.
         let badFinished = Data(repeating: 0xFF, count: 12)
         let badFinMsg = DTLSHandshakeHeader.encodeMessage(
             type: .finished,
-            messageSeq: 0,
+            messageSeq: server.nextExpectedReceiveSeq,
             body: badFinished
         )
 
@@ -297,7 +305,7 @@ struct HandshakeStateMachineContractTests {
         let cert = try DTLSCertificate.generateSelfSigned()
         let client = DTLSClientHandshakeHandler(certificate: cert)
 
-        _ = client.startHandshake()
+        _ = try client.startHandshake()
         #expect(client.currentState == .waitingServerHello)
 
         #expect(throws: DTLSError.self) {
@@ -336,7 +344,7 @@ struct HandshakeStateMachineContractTests {
         let server = DTLSServerHandshakeHandler(certificate: serverCert)
 
         // Step 1: ClientHello
-        let ch1Actions = client.startHandshake()
+        let ch1Actions = try client.startHandshake()
         guard case .sendMessage(let chMsg) = ch1Actions[0] else {
             throw DTLSError.handshakeFailed("No ClientHello")
         }

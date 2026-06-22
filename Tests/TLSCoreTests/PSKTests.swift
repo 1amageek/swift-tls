@@ -188,6 +188,39 @@ struct PreSharedKeyExtensionTests {
         #expect(decoded.binders[1] == binder2)
     }
 
+    @Test("Decode rejects a binder shorter than 32 bytes")
+    func rejectShortBinder() throws {
+        let identity = PskIdentity(identity: Data([0x01]), obfuscatedTicketAge: 1000)
+        // A 16-byte binder violates RFC 8446 §4.2.11.2 (opaque<32..255>).
+        let shortBinder = Data(repeating: 0xCC, count: 16)
+        let offered = OfferedPsks(identities: [identity], binders: [shortBinder])
+
+        #expect(throws: TLSDecodeError.self) {
+            _ = try OfferedPsks.decode(from: offered.encode())
+        }
+    }
+
+    @Test("Decode rejects an empty binders section")
+    func rejectEmptyBinders() throws {
+        let identity = PskIdentity(identity: Data([0x01]), obfuscatedTicketAge: 1000)
+        let offered = OfferedPsks(identities: [identity], binders: [])
+
+        #expect(throws: TLSDecodeError.self) {
+            _ = try OfferedPsks.decode(from: offered.encode())
+        }
+    }
+
+    @Test("Decode accepts a binder at the 32-byte minimum")
+    func acceptMinimumBinder() throws {
+        let identity = PskIdentity(identity: Data([0x09]), obfuscatedTicketAge: 5)
+        let binder = Data(repeating: 0x77, count: 32)
+        let offered = OfferedPsks(identities: [identity], binders: [binder])
+
+        let decoded = try OfferedPsks.decode(from: offered.encode())
+        #expect(decoded.binders.count == 1)
+        #expect(decoded.binders[0] == binder)
+    }
+
     @Test("Encode and decode SelectedPsk")
     func roundtripSelectedPsk() throws {
         let selected = SelectedPsk(selectedIdentity: 0)

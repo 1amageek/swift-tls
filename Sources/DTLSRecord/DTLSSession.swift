@@ -78,7 +78,7 @@ public struct DTLSSession: Sendable {
             fragment: plaintext
         )
 
-        let aad = record.buildAAD(plaintextLength: plaintext.count)
+        let aad = try record.buildAAD(plaintextLength: plaintext.count)
         let encrypted = try DTLSRecordCryptor.seal(
             plaintext: plaintext,
             key: writeKey,
@@ -103,8 +103,14 @@ public struct DTLSSession: Sendable {
             throw DTLSRecordError.invalidContentType(record.contentType.rawValue)
         }
 
+        // Validate the fragment carries at least the AEAD overhead (explicit nonce +
+        // tag) before computing the plaintext length, so a short/forged record yields
+        // a typed error instead of trapping on an out-of-range UInt16 conversion.
+        guard record.fragment.count >= 8 + 16 else {
+            throw DTLSRecordError.decryptionFailed("Fragment too short for AEAD overhead")
+        }
         let plaintextLen = record.fragment.count - 8 - 16 // subtract explicit nonce + tag
-        let aad = record.buildAAD(plaintextLength: plaintextLen)
+        let aad = try record.buildAAD(plaintextLength: plaintextLen)
 
         return try DTLSRecordCryptor.open(
             ciphertext: record.fragment,

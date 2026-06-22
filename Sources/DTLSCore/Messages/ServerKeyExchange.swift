@@ -129,7 +129,7 @@ public struct ServerKeyExchange: Sendable {
         // Signature
         let hashByte = try reader.readUInt8()
         let sigByte = try reader.readUInt8()
-        let scheme = SignatureScheme.from(hash: hashByte, signature: sigByte)
+        let scheme = try SignatureScheme.from(hash: hashByte, signature: sigByte)
         let signature = try reader.readVector16()
 
         return ServerKeyExchange(
@@ -154,9 +154,18 @@ extension SignatureScheme {
         UInt8(rawValue & 0xFF)
     }
 
-    /// Construct from hash + signature algorithm bytes
-    static func from(hash: UInt8, signature: UInt8) -> SignatureScheme {
+    /// Construct from hash + signature algorithm bytes.
+    ///
+    /// Rejects an unknown (hash, signature) pair rather than silently defaulting to
+    /// ECDSA-P256-SHA256 — a silent default would let a peer's advertised algorithm
+    /// be misinterpreted, breaking signature verification semantics.
+    static func from(hash: UInt8, signature: UInt8) throws -> SignatureScheme {
         let value = UInt16(hash) << 8 | UInt16(signature)
-        return SignatureScheme(rawValue: value) ?? .ecdsa_secp256r1_sha256
+        guard let scheme = SignatureScheme(rawValue: value) else {
+            throw DTLSError.invalidServerKeyExchange(
+                "Unknown signature scheme 0x\(String(value, radix: 16))"
+            )
+        }
+        return scheme
     }
 }

@@ -19,6 +19,31 @@ public final class ClientStateMachine: Sendable {
         var configuration: TLSConfiguration = TLSConfiguration()
     }
 
+    /// Signature schemes the client advertises. This list is the single source of
+    /// truth and MUST match what `VerificationKey` can actually verify — we never
+    /// advertise a capability we cannot honor. RSA-PSS schemes are intentionally
+    /// excluded because no RSA verifier is implemented; advertising them would let a
+    /// server pick an algorithm whose CertificateVerify we could not check, which
+    /// would fail the handshake (or, worse, invite an unverifiable peer).
+    static let advertisedSignatureSchemes: [SignatureScheme] = [
+        .ecdsa_secp256r1_sha256,
+        .ecdsa_secp384r1_sha384,
+        .ed25519
+    ]
+
+    /// RFC 8446 §4.1.3 downgrade sentinels: the final 8 bytes a server sets in its
+    /// ServerHello.random when it negotiated a version below TLS 1.3.
+    /// "DOWNGRD" + 0x01 (negotiated TLS 1.2) and "DOWNGRD" + 0x00 (TLS 1.1 or below).
+    static let downgradeSentinelTLS12: [UInt8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x01]
+    static let downgradeSentinelTLS11OrBelow: [UInt8] = [0x44, 0x4F, 0x57, 0x4E, 0x47, 0x52, 0x44, 0x00]
+
+    /// Whether the given 32-byte random ends with a TLS downgrade sentinel.
+    static func hasDowngradeSentinel(_ random: Data) -> Bool {
+        guard random.count >= 8 else { return false }
+        let tail = Array(random.suffix(8))
+        return tail == downgradeSentinelTLS12 || tail == downgradeSentinelTLS11OrBelow
+    }
+
     // MARK: - Initialization
 
     public init() {}
@@ -72,15 +97,8 @@ public final class ClientStateMachine: Sendable {
             // supported_groups (from configuration)
             extensions.append(.supportedGroupsList(configuration.supportedGroups))
 
-            // signature_algorithms - comprehensive list for wide compatibility
-            extensions.append(.signatureAlgorithmsList([
-                .ecdsa_secp256r1_sha256,
-                .ecdsa_secp384r1_sha384,
-                .rsa_pss_rsae_sha256,
-                .rsa_pss_rsae_sha384,
-                .rsa_pss_rsae_sha512,
-                .ed25519
-            ]))
+            // signature_algorithms — only schemes we can actually verify (no RSA).
+            extensions.append(.signatureAlgorithmsList(Self.advertisedSignatureSchemes))
 
             // key_share
             extensions.append(.keyShareClient([keyExchange.keyShareEntry()]))
@@ -280,6 +298,14 @@ public final class ClientStateMachine: Sendable {
                 throw TLSHandshakeError.unsupportedVersion
             }
 
+            // RFC 8446 §4.1.3: downgrade protection. A genuine TLS 1.3 server sets
+            // the last 8 bytes of its random to a sentinel ONLY when it negotiated a
+            // lower version. Since we negotiate TLS 1.3, observing either sentinel
+            // here means an attacker forced a downgrade — abort the handshake.
+            if Self.hasDowngradeSentinel(serverHello.random) {
+                throw TLSHandshakeError.downgradeDetected
+            }
+
             // Validate legacy_session_id_echo (must match what we sent)
             guard serverHello.legacySessionIDEcho == state.context.sessionID else {
                 throw TLSHandshakeError.invalidExtension("ServerHello legacy_session_id_echo does not match ClientHello")
@@ -463,15 +489,8 @@ public final class ClientStateMachine: Sendable {
         // supported_groups (from configuration)
         extensions.append(.supportedGroupsList(state.configuration.supportedGroups))
 
-        // signature_algorithms - comprehensive list for wide compatibility
-        extensions.append(.signatureAlgorithmsList([
-            .ecdsa_secp256r1_sha256,
-            .ecdsa_secp384r1_sha384,
-            .rsa_pss_rsae_sha256,
-            .rsa_pss_rsae_sha384,
-            .rsa_pss_rsae_sha512,
-            .ed25519
-        ]))
+        // signature_algorithms — only schemes we can actually verify (no RSA).
+        extensions.append(.signatureAlgorithmsList(Self.advertisedSignatureSchemes))
 
         // key_share with the new key
         extensions.append(.keyShareClient([keyExchange.keyShareEntry()]))
@@ -762,9 +781,9 @@ public final class ClientStateMachine: Sendable {
                 return []
             }
 
-            // Parse and validate X.509 certificate if verification is enabled
-            // Skip X.509 parsing if expectedPeerPublicKey is set (raw public key verification)
-            if state.configuration.verifyPeer && state.configuration.expectedPeerPublicKey == nil {
+            // X.509 path (not raw public key, no explicitly configured key).
+            // Skip if expectedPeerPublicKey is set (raw public key verification).
+            if state.configuration.expectedPeerPublicKey == nil {
                 guard let leafCertData = certificate.leafCertificate else {
                     throw TLSHandshakeError.certificateVerificationFailed("No certificate provided")
                 }
@@ -780,37 +799,44 @@ public final class ClientStateMachine: Sendable {
                 // Store the parsed certificate
                 state.context.peerCertificate = leafCert
 
-                // Parse intermediate certificates
-                let intermediateCerts = try certificate.certificates.dropFirst().compactMap { certData -> X509Certificate? in
-                    try X509Certificate.parse(from: certData)
-                }
-
-                // Set up validation options
-                var validationOptions = X509ValidationOptions()
-                validationOptions.hostname = state.configuration.serverName
-                validationOptions.allowSelfSigned = state.configuration.allowSelfSigned
-                validationOptions.revocationCheckMode = state.configuration.revocationCheckMode
-                // RFC 5280 Section 4.2.1.12: Server certificates MUST have serverAuth EKU
-                validationOptions.requiredEKU = .serverAuth
-
-                // Create validator with trusted roots
-                let validator = X509Validator(
-                    trustedRoots: state.configuration.trustedRootCertificates ?? [],
-                    options: validationOptions
-                )
-
-                // Validate the certificate chain
-                do {
-                    try validator.validate(certificate: leafCert, intermediates: Array(intermediateCerts))
-                } catch let error as X509Error {
-                    throw TLSHandshakeError.certificateVerificationFailed(error.description)
-                }
-
-                // Extract and store the public key for CertificateVerify verification
+                // Always extract and store the leaf public key. The CertificateVerify
+                // proof-of-possession signature MUST be verified against it regardless
+                // of `verifyPeer`: `verifyPeer` only controls X.509 chain/trust-anchor
+                // validation, never the handshake signature (otherwise a single flag
+                // would yield an unauthenticated-but-"complete" channel).
                 do {
                     state.context.peerVerificationKey = try leafCert.extractPublicKey()
                 } catch {
                     throw TLSHandshakeError.certificateVerificationFailed("Failed to extract public key: \(error)")
+                }
+
+                // X.509 chain/trust-anchor validation is gated by verifyPeer.
+                if state.configuration.verifyPeer {
+                    // Parse intermediate certificates
+                    let intermediateCerts = try certificate.certificates.dropFirst().compactMap { certData -> X509Certificate? in
+                        try X509Certificate.parse(from: certData)
+                    }
+
+                    // Set up validation options
+                    var validationOptions = X509ValidationOptions()
+                    validationOptions.hostname = state.configuration.serverName
+                    validationOptions.allowSelfSigned = state.configuration.allowSelfSigned
+                    validationOptions.revocationCheckMode = state.configuration.revocationCheckMode
+                    // RFC 5280 Section 4.2.1.12: Server certificates MUST have serverAuth EKU
+                    validationOptions.requiredEKU = .serverAuth
+
+                    // Create validator with trusted roots
+                    let validator = X509Validator(
+                        trustedRoots: state.configuration.trustedRootCertificates ?? [],
+                        options: validationOptions
+                    )
+
+                    // Validate the certificate chain
+                    do {
+                        try validator.validate(certificate: leafCert, intermediates: Array(intermediateCerts))
+                    } catch let error as X509Error {
+                        throw TLSHandshakeError.certificateVerificationFailed(error.description)
+                    }
                 }
             }
 
@@ -879,11 +905,14 @@ public final class ClientStateMachine: Sendable {
                 guard isValid else {
                     throw TLSHandshakeError.signatureVerificationFailed
                 }
-            } else if state.configuration.verifyPeer {
-                // verifyPeer is true but we have no key to verify with
-                throw TLSHandshakeError.certificateVerificationFailed("No public key available for verification")
+            } else if (state.context.peerCertificates?.isEmpty == false)
+                        || state.configuration.verifyPeer {
+                // A certificate (or CertificateVerify) was presented but no key is
+                // available to verify possession. Fail closed — never accept an
+                // unverified peer identity. This is independent of `verifyPeer`:
+                // proof of possession is mandatory whenever the peer authenticates.
+                throw TLSHandshakeError.certificateVerificationFailed("No public key available to verify CertificateVerify")
             }
-            // If verifyPeer is false, skip signature verification
 
             // Update transcript
             let message = HandshakeCodec.encode(type: .certificateVerify, content: data)

@@ -77,6 +77,10 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
     /// Protocol version mismatch
     case unsupportedVersion
 
+    /// RFC 8446 §4.1.3: a TLS version downgrade was detected via the ServerHello
+    /// random downgrade sentinel.
+    case downgradeDetected
+
     /// No common cipher suite
     case noCipherSuiteMatch
 
@@ -124,6 +128,7 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
         switch (lhs, rhs) {
         case (.unexpectedMessage(let l), .unexpectedMessage(let r)): return l == r
         case (.unsupportedVersion, .unsupportedVersion): return true
+        case (.downgradeDetected, .downgradeDetected): return true
         case (.noCipherSuiteMatch, .noCipherSuiteMatch): return true
         case (.noKeyShareMatch, .noKeyShareMatch): return true
         case (.noALPNMatch, .noALPNMatch): return true
@@ -149,6 +154,9 @@ public enum TLSHandshakeError: Error, Sendable, Equatable {
             return TLSAlert(description: .unexpectedMessage)
         case .unsupportedVersion:
             return TLSAlert(description: .protocolVersion)
+        case .downgradeDetected:
+            // RFC 8446 §4.1.3: abort with illegal_parameter on a detected downgrade.
+            return TLSAlert(description: .illegalParameter)
         case .noCipherSuiteMatch:
             return TLSAlert(description: .handshakeFailure)
         case .noKeyShareMatch:

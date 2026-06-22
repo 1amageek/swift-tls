@@ -14,7 +14,7 @@ struct DTLSHandshakeActionTests {
         let cert = try DTLSCertificate.generateSelfSigned()
         let handler = DTLSClientHandshakeHandler(certificate: cert)
 
-        let actions = handler.startHandshake()
+        let actions = try handler.startHandshake()
         #expect(actions.count == 1)
 
         guard case .sendMessage(let msg) = actions[0] else {
@@ -33,7 +33,7 @@ struct DTLSHandshakeActionTests {
         let serverHandler = DTLSServerHandshakeHandler(certificate: cert)
 
         // Build a ClientHello raw message
-        let clientHello = DTLSClientHello(cipherSuites: [.ecdheEcdsaWithAes128GcmSha256])
+        let clientHello = try DTLSClientHello(cipherSuites: [.ecdheEcdsaWithAes128GcmSha256])
         let chBody = clientHello.encode()
         let chMsg = DTLSHandshakeHeader.encodeMessage(
             type: .clientHello,
@@ -63,7 +63,7 @@ struct DTLSHandshakeActionTests {
         let serverHandler = DTLSServerHandshakeHandler(certificate: serverCert)
 
         // Client → ClientHello
-        let clientHelloActions = clientHandler.startHandshake()
+        let clientHelloActions = try clientHandler.startHandshake()
         guard case .sendMessage(let chMsg) = clientHelloActions[0] else { return }
 
         // Server → HelloVerifyRequest
@@ -123,7 +123,7 @@ struct DTLSHandshakeActionTests {
         let serverHandler = DTLSServerHandshakeHandler(certificate: serverCert)
 
         // Client starts handshake
-        var clientActions = clientHandler.startHandshake()
+        var clientActions = try clientHandler.startHandshake()
 
         // Exchange messages until both complete
         var iterations = 0
@@ -194,7 +194,7 @@ struct DTLSHandshakeActionTests {
         let serverHandler = DTLSServerHandshakeHandler(certificate: serverCert)
 
         // Run through handshake until client sends its flight
-        let ch1 = clientHandler.startHandshake()
+        let ch1 = try clientHandler.startHandshake()
         guard case .sendMessage(let chMsg) = ch1[0] else { return }
         let hvr = try serverHandler.processClientHello(chMsg, clientAddress: Data([1, 2, 3, 4]))
         guard case .sendMessage(let hvrMsg) = hvr[0] else { return }
