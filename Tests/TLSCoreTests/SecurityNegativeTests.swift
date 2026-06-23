@@ -180,6 +180,84 @@ struct SecurityNegativeTests {
         }
     }
 
+    // MARK: - 5b. Forged CertificateVerify is rejected even when verifyPeer is off
+
+    /// Flips one byte inside the first CertificateVerify (handshake type 15)
+    /// found in a (possibly combined) handshake-message byte stream, corrupting
+    /// its signature without changing any length field.
+    private func tamperCertificateVerifySignature(_ data: Data) -> Data {
+        var bytes = [UInt8](data)
+        var offset = 0
+        while offset + 4 <= bytes.count {
+            let type = bytes[offset]
+            let length = Int(bytes[offset + 1]) << 16
+                | Int(bytes[offset + 2]) << 8
+                | Int(bytes[offset + 3])
+            let contentStart = offset + 4
+            let contentEnd = contentStart + length
+            guard contentEnd <= bytes.count else { break }
+            if type == 15 {  // certificate_verify
+                // Flip the final byte of the signature (last byte of content).
+                bytes[contentEnd - 1] ^= 0xFF
+                return Data(bytes)
+            }
+            offset = contentEnd
+        }
+        return Data(bytes)
+    }
+
+    @Test("Forged server CertificateVerify is rejected even with verifyPeer disabled")
+    func testForgedCertificateVerifyRejectedWithoutVerifyPeer() async throws {
+        // verifyPeer only gates X.509 chain/trust validation. The CertificateVerify
+        // proof-of-possession signature MUST be verified regardless — a forged
+        // signature must abort the handshake (RFC 8446 §4.4.3). This invariant now
+        // lives in the Embedded-clean FSM core (TLSClientAuthMachine), so this test
+        // guards that the core's verification stays on the live path.
+        var clientConfig = TLSConfiguration.client(serverName: "localhost")
+        clientConfig.expectedPeerPublicKey = TestFixture.serverSigningKey.publicKeyBytes
+        clientConfig.verifyPeer = false  // X.509 trust off; possession check stays on
+
+        let serverConfig = TestFixture.serverConfig()
+
+        let client = TLS13Handler(configuration: clientConfig)
+        let server = TLS13Handler(configuration: serverConfig)
+
+        let clientOutputs = try await client.startHandshake(isClient: true)
+        _ = try await server.startHandshake(isClient: false)
+
+        var clientHelloData: Data?
+        for output in clientOutputs {
+            if case .handshakeData(let data, _) = output {
+                clientHelloData = data
+            }
+        }
+        let clientHello = try #require(clientHelloData)
+
+        let serverOutputs = try await server.processHandshakeData(clientHello, at: .initial)
+
+        var serverMessages: [(Data, TLSEncryptionLevel)] = []
+        for output in serverOutputs {
+            if case .handshakeData(let data, let level) = output {
+                serverMessages.append((data, level))
+            }
+        }
+
+        // Feed server messages to the client, tampering the CertificateVerify
+        // signature in whichever handshake-level group carries it. The client must
+        // throw rather than complete an unauthenticated-but-"complete" channel.
+        await #expect(throws: TLSHandshakeError.self) {
+            for (msg, level) in serverMessages {
+                let toFeed = (level == .handshake)
+                    ? self.tamperCertificateVerifySignature(msg)
+                    : msg
+                _ = try await client.processHandshakeData(toFeed, at: level)
+            }
+        }
+
+        // The handshake must NOT have completed.
+        #expect(client.isHandshakeComplete == false)
+    }
+
     // MARK: - 6. Invalid Cipher Suite in ServerHello
 
     @Test("ServerHello with cipher suite not offered by client is rejected")
