@@ -44,6 +44,14 @@ public struct TranscriptHash: Sendable {
         self.core = core
     }
 
+    /// The underlying Embedded-clean core value.
+    ///
+    /// Used by the handshake state machine to hand ownership of the running
+    /// transcript to `TLSHandshakeCore.TLSClientAuthMachine` at the
+    /// EncryptedExtensions boundary. After the hand-off the adapter must not
+    /// update this transcript again (the core owns it from there).
+    var coreValue: TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider> { core }
+
     // MARK: - Update
 
     /// Update the transcript with a handshake message

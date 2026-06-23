@@ -76,6 +76,17 @@ public struct TLSKeySchedule: Sendable {
         self.core = TLSCryptoCore.TLSKeySchedule<TLSFoundationProvider>(cipherSuite: cipherSuite)
     }
 
+    /// The underlying Embedded-clean core value.
+    ///
+    /// Used by the handshake state machine to hand the key schedule (already
+    /// advanced to the handshake-secret state) to
+    /// `TLSHandshakeCore.TLSClientAuthMachine`, and to restore it afterwards so
+    /// the adapter can derive ticket PSKs post-handshake.
+    var coreValue: TLSCryptoCore.TLSKeySchedule<TLSFoundationProvider> {
+        get { core }
+        set { core = newValue }
+    }
+
     // MARK: - Early Secret
 
     /// Derive early secret from PSK (or use 0 for non-PSK mode)
