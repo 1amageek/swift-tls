@@ -213,17 +213,30 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
         case precomputed([UInt8])
     }
 
+    /// Accepted-PSK material: the resolved PSK bytes and the ticket's cipher suite
+    /// (the early-secret hash). The adapter validates the binder (via
+    /// ``isValidPSKBinder``) and resolves the session before passing this in; the
+    /// core then installs the PSK early secret into the key schedule.
+    public struct AcceptedPSK: Sendable {
+        public let psk: [UInt8]
+        public let cipherSuite: CipherSuite
+        public init(psk: [UInt8], cipherSuite: CipherSuite) {
+            self.psk = psk
+            self.cipherSuite = cipherSuite
+        }
+    }
+
     /// The server's resolved per-handshake parameters for building the flight. The
     /// adapter computes all negotiation outcomes (which depend on `TLSConfiguration`)
     /// and hands them here; the core owns the transcript + key schedule + crypto.
     public struct FlightParameters: Sendable {
         /// The negotiated cipher suite.
         public let cipherSuite: CipherSuite
-        /// Whether a PSK was accepted (skips Certificate/CertificateVerify).
-        public let pskAccepted: Bool
+        /// The accepted PSK (skips Certificate/CertificateVerify), or `nil`.
+        public let acceptedPSK: AcceptedPSK?
         /// The (EC)DHE input.
         public let keyExchange: KeyExchangeInput
-        /// Whether 0-RTT early data was accepted (drives the 0-RTT-secret emission).
+        /// Whether 0-RTT early data was accepted (drives the 0-RTT-secret derivation).
         public let earlyDataAccepted: Bool
         /// Whether the server requested a client certificate (mutual TLS).
         public let requestClientCertificate: Bool
@@ -233,14 +246,14 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
 
         public init(
             cipherSuite: CipherSuite,
-            pskAccepted: Bool,
+            acceptedPSK: AcceptedPSK?,
             keyExchange: KeyExchangeInput,
             earlyDataAccepted: Bool,
             requestClientCertificate: Bool,
             certificateRequestSignatureAlgorithms: [TLSWireCore.SignatureScheme]?
         ) {
             self.cipherSuite = cipherSuite
-            self.pskAccepted = pskAccepted
+            self.acceptedPSK = acceptedPSK
             self.keyExchange = keyExchange
             self.earlyDataAccepted = earlyDataAccepted
             self.requestClientCertificate = requestClientCertificate
@@ -293,6 +306,7 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
         serverCertificateBytes: [UInt8]?
     ) throws(TLSHandshakeError) -> (
         handshakeSecrets: (client: [UInt8], server: [UInt8]),
+        clientEarlyTrafficSecret: [UInt8]?,
         certificateVerifyRequest: ServerCertificateVerifyRequest?
     ) {
         guard state == .start || state == .sentHelloRetryRequest else {
@@ -300,7 +314,7 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
         }
 
         self.cipherSuite = parameters.cipherSuite
-        self.pskUsed = parameters.pskAccepted
+        self.pskUsed = parameters.acceptedPSK != nil
         self.requestedClientCertificate = parameters.requestClientCertificate
         self.sentSignatureAlgorithms = parameters.certificateRequestSignatureAlgorithms
 
@@ -321,20 +335,39 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
             sharedSecret = secret
         }
 
-        // Reinitialise the key schedule for a non-PSK handshake (a PSK handshake
-        // already derived the early secret with the PSK; the adapter installed it).
-        if !parameters.pskAccepted {
+        // Install the early secret: from the PSK (at the ticket suite) for an
+        // accepted PSK, else fresh at the negotiated suite. The main transcript
+        // keeps its own (default) suite, matching the legacy adapter.
+        if let acceptedPSK = parameters.acceptedPSK {
+            keySchedule = TLSKeySchedule<C>(cipherSuite: acceptedPSK.cipherSuite)
+            keySchedule.deriveEarlySecret(psk: acceptedPSK.psk)
+        } else {
             keySchedule = TLSKeySchedule<C>(cipherSuite: parameters.cipherSuite)
             keySchedule.deriveEarlySecret(psk: nil)
         }
 
-        // Transcript: ClientHello, then ServerHello. After a HelloRetryRequest the
-        // transcript already carries message_hash(CH1) + HRR, and `clientHelloBytes`
-        // is ClientHello2; before an HRR it is the sole ClientHello.
+        // Fold ClientHello. After a HelloRetryRequest the transcript already carries
+        // message_hash(CH1) + HRR, and `clientHelloBytes` is ClientHello2; before an
+        // HRR it is the sole ClientHello.
         transcript.update(with: clientHelloBytes.span)
-        transcript.update(with: serverHelloBytes.span)
 
-        // Derive the handshake-traffic secrets over CH…SH.
+        // 0-RTT: the client_early_traffic_secret is derived over the *main*
+        // transcript hash at the ClientHello-only point (default suite), matching the
+        // legacy server adapter (which uses `state.context.transcriptHash`, not a
+        // fresh ticket-suite transcript).
+        var clientEarlyTrafficSecret: [UInt8]?
+        if parameters.earlyDataAccepted, parameters.acceptedPSK != nil {
+            do {
+                clientEarlyTrafficSecret = try keySchedule.deriveClientEarlyTrafficSecret(
+                    transcriptHash: transcript.currentHash()
+                )
+            } catch {
+                throw .internalError("Failed to derive client early traffic secret")
+            }
+        }
+
+        // Fold ServerHello, then derive the handshake-traffic secrets over CH…SH.
+        transcript.update(with: serverHelloBytes.span)
         let handshakeSecrets: (client: [UInt8], server: [UInt8])
         do {
             handshakeSecrets = try keySchedule.deriveHandshakeSecrets(
@@ -358,7 +391,7 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
         // Non-PSK: fold the server Certificate and request a CertificateVerify
         // signature over the current transcript hash.
         var certificateVerifyRequest: ServerCertificateVerifyRequest?
-        if !parameters.pskAccepted {
+        if parameters.acceptedPSK == nil {
             guard let serverCertificateBytes else {
                 throw .internalError("Non-PSK handshake missing server Certificate")
             }
@@ -368,7 +401,7 @@ public struct TLSServerHandshake<C: CryptoProvider>: Sendable {
             )
         }
 
-        return (handshakeSecrets, certificateVerifyRequest)
+        return (handshakeSecrets, clientEarlyTrafficSecret, certificateVerifyRequest)
     }
 
     /// Folds the adapter-signed server CertificateVerify into the transcript.

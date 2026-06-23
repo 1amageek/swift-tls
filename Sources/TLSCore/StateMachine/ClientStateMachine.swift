@@ -291,6 +291,11 @@ public final class ClientStateMachine: Sendable {
             // the last 8 bytes of its random to a sentinel ONLY when it negotiated a
             // lower version. Since we negotiate TLS 1.3, observing either sentinel
             // here means an attacker forced a downgrade — abort the handshake.
+            //
+            // The authoritative, fail-closed enforcement now lives in the Embedded-
+            // clean core (`TLSClientHandshake.ingestServerHello`, byte-identical
+            // sentinels). This adapter pre-check is retained as defense-in-depth and
+            // to abort before any key-agreement work (preserving the legacy ordering).
             if Self.hasDowngradeSentinel(Data(serverHello.random)) {
                 throw TLSHandshakeError.downgradeDetected
             }
