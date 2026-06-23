@@ -96,14 +96,15 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
     /// ServerHello with the negotiated cipher suite.
     private var keySchedule: TLSKeySchedule<C>
 
-    /// The cipher suite. Provisional (the PSK ticket suite) until ServerHello
-    /// resolves the negotiated suite, or until HelloRetryRequest fixes it.
+    /// The negotiated cipher suite, resolved at ServerHello (carries the suite the
+    /// auth FSM uses for the post-ServerHello flight). Before ServerHello it holds
+    /// the main-transcript suite, updated to the HRR suite by HelloRetryRequest.
     private var cipherSuite: CipherSuite
 
     private var state: PreState
 
-    /// Whether a PSK was offered (drives the early-secret ownership and the
-    /// "do not reinitialise the key schedule at ServerHello" branch).
+    /// Whether a PSK was offered (drives the "do not reinitialise the key schedule
+    /// at ServerHello" branch).
     private let pskOffered: Bool
 
     /// Whether 0-RTT early data is being attempted (cleared on HelloRetryRequest).
@@ -122,8 +123,11 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
     /// Constructs the pre-ServerHello machine.
     ///
     /// - Parameters:
-    ///   - cipherSuite: The provisional cipher suite (the PSK ticket suite for a
-    ///     resumption attempt, or the suite the adapter intends to use).
+    ///   - cipherSuite: The cipher suite for the **main** transcript hash and the
+    ///     (initial) key schedule. The client passes its default suite here — to
+    ///     stay byte-identical to the legacy adapter, the main transcript hash is
+    ///     NOT the PSK ticket suite; the PSK binder is computed with its own
+    ///     ticket-suite key schedule + transcript (see ``PSKBinderInput``).
     ///   - pskOffered: Whether the client is offering a PSK (resumption).
     public init(cipherSuite: CipherSuite, pskOffered: Bool) {
         self.transcript = TLSTranscriptHash<C>(cipherSuite: cipherSuite)
@@ -149,16 +153,25 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
     /// Whether a HelloRetryRequest was processed.
     public var helloRetryRequestReceived: Bool { receivedHelloRetryRequest }
 
+    /// Whether a PSK was offered in the (first) ClientHello.
+    public var pskWasOffered: Bool { pskOffered }
+
     // MARK: - ClientHello: PSK binder + transcript
 
-    /// PSK material for a resumption ClientHello: the resumption PSK and whether
-    /// the ticket's binder is a resumption binder (always `true` for tickets).
+    /// PSK material for a resumption ClientHello.
+    ///
+    /// The binder (and the PSK early secret / 0-RTT secret) use the **ticket's**
+    /// cipher-suite hash (`binderCipherSuite`), which can differ from the main
+    /// transcript suite — matching the legacy adapter byte-for-byte.
     public struct PSKBinderInput: Sendable {
         public let psk: [UInt8]
         public let isResumption: Bool
-        public init(psk: [UInt8], isResumption: Bool) {
+        /// The PSK ticket's cipher suite (selects the binder / early-secret hash).
+        public let binderCipherSuite: CipherSuite
+        public init(psk: [UInt8], isResumption: Bool, binderCipherSuite: CipherSuite) {
             self.psk = psk
             self.isResumption = isResumption
+            self.binderCipherSuite = binderCipherSuite
         }
     }
 
@@ -199,9 +212,11 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
             throw .unexpectedMessage("ClientHello already produced")
         }
 
-        // For a PSK handshake the early secret is derived from the PSK before the
-        // binder is computed (the binder transcript is over the truncated CH only).
+        // For a PSK handshake the key schedule moves to the ticket's cipher suite
+        // (the binder + early-secret hash) and derives the early secret from the PSK
+        // before the binder is computed. The main transcript keeps its own suite.
         if let pskBinder {
+            keySchedule = TLSKeySchedule<C>(cipherSuite: pskBinder.binderCipherSuite)
             keySchedule.deriveEarlySecret(psk: pskBinder.psk)
         }
 
@@ -218,11 +233,12 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
         // Fold the ClientHello into the transcript.
         transcript.update(with: clientHelloMessage.span)
 
-        // Derive the 0-RTT early-traffic-secret over the ClientHello transcript.
+        // Derive the 0-RTT early-traffic-secret over the ClientHello transcript,
+        // hashed with the ticket suite (the early-secret hash).
         var earlyTrafficSecret: [UInt8]?
-        if attemptEarlyData, pskBinder != nil {
+        if attemptEarlyData, let pskBinder {
             attemptingEarlyData = true
-            var earlyTranscript = TLSTranscriptHash<C>(cipherSuite: cipherSuite)
+            var earlyTranscript = TLSTranscriptHash<C>(cipherSuite: pskBinder.binderCipherSuite)
             earlyTranscript.update(with: clientHelloMessage.span)
             do {
                 earlyTrafficSecret = try keySchedule.deriveClientEarlyTrafficSecret(
@@ -279,8 +295,11 @@ public struct TLSClientHandshake<C: CryptoProvider>: Sendable {
         }
         let truncated = Array(placeholder.prefix(placeholder.count - bindersSectionSize))
 
+        // CH1: fresh binder transcript at the ticket suite. CH2 (after HRR): the
+        // running main transcript (message_hash + HRR) copied — matching the legacy
+        // adapter, which mixes the main-transcript hash with the ticket-suite key.
         var binderTranscript = binderTranscriptPrefix?.copy()
-            ?? TLSTranscriptHash<C>(cipherSuite: cipherSuite)
+            ?? TLSTranscriptHash<C>(cipherSuite: pskBinder.binderCipherSuite)
         binderTranscript.update(with: truncated.span)
         let binderHash = binderTranscript.currentHash()
 

@@ -31,6 +31,13 @@ public final class ClientStateMachine: Sendable {
         var context: HandshakeContext = HandshakeContext()
         var configuration: TLSConfiguration = TLSConfiguration()
 
+        /// The Embedded-clean pre-ServerHello FSM: owns the transcript + key
+        /// schedule from ClientHello through ServerHello (ClientHello assembly +
+        /// PSK binder, HelloRetryRequest, downgrade-sentinel detection, (EC)DHE +
+        /// handshake-secret derivation). Handed off to `authMachine` after
+        /// ServerHello via `makeAuthMachine`.
+        var preMachine: TLSClientHandshake<TLSFoundationProvider>?
+
         /// The Embedded-clean authentication FSM, constructed at the end of
         /// ServerHello processing and driven from EncryptedExtensions onward.
         var authMachine: TLSClientAuthMachine<TLSFoundationProvider>?
@@ -160,7 +167,13 @@ public final class ClientStateMachine: Sendable {
             var cipherSuites: [CipherSuite] = configuration.supportedCipherSuites
 
             // PSK-related extensions (if we have a session ticket)
-            var pskExtensionsInfo: (offered: OfferedPsks, ticket: SessionTicketData)?
+            var offeredPsks: OfferedPsks?
+            var pskBinder: TLSClientHandshake<TLSFoundationProvider>.PSKBinderInput?
+
+            // The main transcript suite. Kept at the default (SHA-256) to match the
+            // legacy adapter's default `TranscriptHash()`; the PSK binder uses its
+            // own ticket-suite hash via `PSKBinderInput.binderCipherSuite`.
+            let preCipherSuite: CipherSuite = .tls_aes_128_gcm_sha256
 
             if let ticket = sessionTicket, ticket.isValid() {
                 // If resuming, prefer the original cipher suite
@@ -185,100 +198,47 @@ public final class ClientStateMachine: Sendable {
                 // pre_shared_key must be the last extension
                 // Create the PSK identity from the ticket
                 let pskIdentity = PskIdentity(ticket: ticket)
-                let offeredPsks = OfferedPsks(
+                offeredPsks = OfferedPsks(
                     identities: [pskIdentity],
                     binders: [Data(repeating: 0, count: ticket.cipherSuite.hashLength)] // Placeholder
                 )
-                pskExtensionsInfo = (offered: offeredPsks, ticket: ticket)
-
-                // Initialize key schedule with PSK
-                let psk = ticket.resumptionPSK
-                state.context.keySchedule = TLSKeySchedule(cipherSuite: ticket.cipherSuite)
-                state.context.keySchedule.deriveEarlySecret(psk: psk)
+                pskBinder = TLSClientHandshake<TLSFoundationProvider>.PSKBinderInput(
+                    psk: Self.secretBytes(ticket.resumptionPSK),
+                    isResumption: true,
+                    binderCipherSuite: ticket.cipherSuite
+                )
 
                 // Store the PSK cipher suite for 0-RTT key output
                 // (will be updated to negotiated suite after ServerHello)
                 state.context.cipherSuite = ticket.cipherSuite
             }
 
-            // If offering PSK, we need to compute binders using a two-pass approach
-            var clientHelloMessage: Data
-            if let pskInfo = pskExtensionsInfo {
-                let ticket = pskInfo.ticket
-                var offeredPsks = pskInfo.offered
-
-                // First pass: Build ClientHello with placeholder binders
-                var extensionsWithPsk = extensions
-                extensionsWithPsk.append(.preSharedKeyClient(offeredPsks))
-
-                let placeholderClientHello = try ClientHello(
-                    random: random,
-                    legacySessionID: sessionID,
-                    cipherSuites: cipherSuites,
-                    extensions: extensionsWithPsk
-                )
-
-                // Encode ClientHello to get the transcript up to binders
-                let clientHelloWithPlaceholder = placeholderClientHello.encodeAsHandshake()
-
-                // Compute the truncated transcript (excluding binders)
-                let bindersSectionSize = offeredPsks.bindersSize
-                let truncatedClientHello = clientHelloWithPlaceholder.prefix(clientHelloWithPlaceholder.count - bindersSectionSize)
-
-                // Initialize transcript hash with truncated ClientHello
-                var transcriptHashForBinder = TranscriptHash(cipherSuite: ticket.cipherSuite)
-                transcriptHashForBinder.update(with: Data(truncatedClientHello))
-
-                // Compute binder
-                let binderKey = try state.context.keySchedule.deriveBinderKey(isResumption: true)
-                state.context.binderKey = binderKey
-                let transcriptHash = transcriptHashForBinder.currentHash()
-                let finishedKeyForBinder = state.context.keySchedule.finishedKey(from: binderKey)
-                let binder = state.context.keySchedule.finishedVerifyData(
-                    forKey: finishedKeyForBinder,
-                    transcriptHash: transcriptHash
-                )
-
-                // Second pass: Rebuild ClientHello with correct binders
-                offeredPsks.binders = [[UInt8](binder)]
-
-                var finalExtensions = extensions
-                finalExtensions.append(.preSharedKeyClient(offeredPsks))
-
-                let finalClientHello = try ClientHello(
-                    random: random,
-                    legacySessionID: sessionID,
-                    cipherSuites: cipherSuites,
-                    extensions: finalExtensions
-                )
-
-                clientHelloMessage = finalClientHello.encodeAsHandshake()
-
-                // Derive early traffic secret if attempting 0-RTT
-                if state.context.earlyDataState.attemptingEarlyData {
-                    var earlyTranscript = TranscriptHash(cipherSuite: ticket.cipherSuite)
-                    earlyTranscript.update(with: clientHelloMessage)
-                    let earlySecret = try state.context.keySchedule.deriveClientEarlyTrafficSecret(
-                        transcriptHash: earlyTranscript.currentHash()
-                    )
-                    state.context.clientEarlyTrafficSecret = earlySecret
-                }
-            } else {
-                // Standard ClientHello without PSK
-                let clientHello = try ClientHello(
-                    random: random,
-                    legacySessionID: sessionID,
-                    cipherSuites: cipherSuites,
-                    extensions: extensions
-                )
-                clientHelloMessage = clientHello.encodeAsHandshake()
+            // Drive the Embedded-clean pre-ServerHello core: it owns the transcript
+            // + key schedule, computes the PSK binder (two-pass, byte-identical),
+            // folds ClientHello into the transcript, and derives the 0-RTT secret.
+            var preMachine = TLSClientHandshake<TLSFoundationProvider>(
+                cipherSuite: preCipherSuite,
+                pskOffered: offeredPsks != nil
+            )
+            let clientHelloBytes: [UInt8]
+            let earlyTrafficSecretBytes: [UInt8]?
+            (clientHelloBytes, earlyTrafficSecretBytes) = try preMachine.produceClientHello(
+                random: [UInt8](random),
+                legacySessionID: [UInt8](sessionID),
+                cipherSuites: cipherSuites,
+                extensions: extensions,
+                offeredPsks: offeredPsks,
+                pskBinder: pskBinder,
+                attemptEarlyData: state.context.earlyDataState.attemptingEarlyData
+            )
+            let clientHelloMessage = Data(clientHelloBytes)
+            if let earlyTrafficSecretBytes {
+                state.context.clientEarlyTrafficSecret = Self.symmetricKey(earlyTrafficSecretBytes)
             }
+            state.preMachine = preMachine
 
             // Store offered cipher suites for ServerHello validation
             state.context.offeredCipherSuites = cipherSuites
-
-            // Update transcript
-            state.context.transcriptHash.update(with: clientHelloMessage)
 
             // Transition state
             state.handshakeState = .waitServerHello
@@ -390,7 +350,11 @@ public final class ClientStateMachine: Sendable {
                 throw TLSHandshakeError.noKeyShareMatch
             }
 
-            // Perform key agreement
+            // Perform key agreement adapter-side. Pure-DH groups route through the
+            // `TLSKeyExchange` seam; the X25519MLKEM768 hybrid (a KEM with no place
+            // in the DH-only seam) is decapsulated here. The resolved shared secret
+            // is handed to the core as `.precomputed` so behavior stays
+            // byte-identical to the pre-FSM key agreement.
             let sharedSecret = try ourKeyExchange.sharedSecret(with: Data(serverKeyShare.serverShare.keyExchange))
             state.context.sharedSecret = sharedSecret
 
@@ -398,41 +362,46 @@ public final class ClientStateMachine: Sendable {
             state.context.cipherSuite = serverHello.cipherSuite
             state.context.serverRandom = Data(serverHello.random)
 
-            // Update transcript with ServerHello
-            let serverHelloMessage = HandshakeCodec.encode(type: .serverHello, content: data)
-            state.context.transcriptHash.update(with: serverHelloMessage)
-
-            // Initialize or update key schedule for the selected cipher suite
-            if !pskAccepted {
-                // Non-PSK mode: reinitialize key schedule with no PSK
-                state.context.keySchedule = TLSKeySchedule(cipherSuite: serverHello.cipherSuite)
-                state.context.keySchedule.deriveEarlySecret(psk: nil)
+            // Drive the Embedded-clean pre-ServerHello core: it performs the RFC
+            // 8446 §4.1.3 downgrade-sentinel check (fail-closed), folds ServerHello
+            // into the transcript, reinitialises the key schedule for the negotiated
+            // suite when no PSK was accepted, and derives the handshake secrets.
+            guard var preMachine = state.preMachine else {
+                throw TLSHandshakeError.internalError("Pre-ServerHello FSM not initialized")
             }
-            // If PSK was accepted, early secret was already derived with PSK in startHandshake
-
-            // Derive handshake secrets
-            let transcriptHash = state.context.transcriptHash.currentHash()
-            let (clientSecret, serverSecret) = try state.context.keySchedule.deriveHandshakeSecrets(
-                sharedSecret: sharedSecret,
-                transcriptHash: transcriptHash
-            )
-
+            let serverHelloMessage = HandshakeCodec.encode(type: .serverHello, content: data)
+            let (clientSecretBytes, serverSecretBytes): ([UInt8], [UInt8])
+            do {
+                (clientSecretBytes, serverSecretBytes) = try preMachine.ingestServerHello(
+                    serverRandom: [UInt8](serverHello.random),
+                    cipherSuite: serverHello.cipherSuite,
+                    pskAccepted: pskAccepted,
+                    keyExchange: .precomputed([UInt8](sharedSecret.rawRepresentation)),
+                    rawMessageBytes: [UInt8](serverHelloMessage)
+                )
+            } catch {
+                state.preMachine = preMachine
+                throw error
+            }
+            let clientSecret = Self.symmetricKey(clientSecretBytes)
+            let serverSecret = Self.symmetricKey(serverSecretBytes)
             state.context.clientHandshakeSecret = clientSecret
             state.context.serverHandshakeSecret = serverSecret
+
+            // Sync the adapter key schedule to the negotiated cipher suite so the
+            // adapter's `hashLength`-dependent reads (server Finished decode) match
+            // the core's hash. The core owns the live key schedule; this adapter
+            // copy is only used for hash-length and post-handshake ticket PSK
+            // derivation (restored from the auth FSM in processServerFinished).
+            state.context.keySchedule = TLSKeySchedule(cipherSuite: serverHello.cipherSuite)
 
             // Hand ownership of the transcript + key schedule to the Embedded-clean
             // authentication FSM. From EncryptedExtensions onward the core owns
             // both; the adapter stops updating them (R1: single transcript owner).
-            state.authMachine = TLSClientAuthMachine<TLSFoundationProvider>(
-                transcript: state.context.transcriptHash.coreValue,
-                keySchedule: state.context.keySchedule.coreValue,
-                cipherSuite: serverHello.cipherSuite,
-                clientHandshakeSecret: Self.secretBytes(clientSecret),
-                serverHandshakeSecret: Self.secretBytes(serverSecret),
-                pskUsed: state.context.pskUsed,
-                verifyPeer: state.configuration.verifyPeer,
-                attemptingEarlyData: state.context.earlyDataState.attemptingEarlyData
+            state.authMachine = try preMachine.makeAuthMachine(
+                verifyPeer: state.configuration.verifyPeer
             )
+            state.preMachine = nil
 
             // Transition state
             state.handshakeState = .waitEncryptedExtensions
@@ -489,27 +458,35 @@ public final class ClientStateMachine: Sendable {
         // Store cipher suite from HRR
         state.context.cipherSuite = hrr.cipherSuite
 
-        // RFC 8446 Section 4.4.1: Special transcript handling for HRR
-        // Save the hash of ClientHello1
-        let clientHello1Hash = state.context.transcriptHash.currentHash()
-        state.context.originalClientHello1Hash = clientHello1Hash
-
-        // Replace transcript with message_hash synthetic message
-        state.context.transcriptHash = TranscriptHash.fromMessageHash(
-            clientHello1Hash: clientHello1Hash,
-            cipherSuite: hrr.cipherSuite
-        )
-
-        // Add HRR to transcript
+        // RFC 8446 Section 4.4.1: Special transcript handling for HRR — applied by
+        // the Embedded-clean core (message_hash(CH1) synthetic transform, then HRR),
+        // which also abandons 0-RTT and fixes the negotiated cipher suite.
+        guard var preMachine = state.preMachine else {
+            throw TLSHandshakeError.internalError("Pre-ServerHello FSM not initialized")
+        }
         let hrrMessage = HandshakeCodec.encode(type: .serverHello, content: data)
-        state.context.transcriptHash.update(with: hrrMessage)
+        do {
+            try preMachine.applyHelloRetryRequest(
+                cipherSuite: hrr.cipherSuite,
+                rawMessageBytes: [UInt8](hrrMessage)
+            )
+        } catch {
+            state.preMachine = preMachine
+            throw error
+        }
 
         // Generate new key pair for the requested group
         let newKeyExchange = try KeyExchange.generate(for: requestedGroup)
         state.context.keyExchange = newKeyExchange
 
-        // Build ClientHello2 with the new key share
-        let clientHello2 = try generateClientHello2(state: &state, keyExchange: newKeyExchange)
+        // Build ClientHello2 with the new key share (the core recomputes the PSK
+        // binder over the message_hash + HRR transcript and folds CH2 in).
+        let clientHello2 = try generateClientHello2(
+            state: &state,
+            preMachine: &preMachine,
+            keyExchange: newKeyExchange
+        )
+        state.preMachine = preMachine
 
         // Transition state
         state.handshakeState = .waitServerHelloRetry
@@ -521,6 +498,7 @@ public final class ClientStateMachine: Sendable {
     /// Generate ClientHello2 after HelloRetryRequest
     private func generateClientHello2(
         state: inout ClientState,
+        preMachine: inout TLSClientHandshake<TLSFoundationProvider>,
         keyExchange: KeyExchange
     ) throws -> Data {
         // Build extensions (similar to startHandshake but with new key_share)
@@ -570,87 +548,39 @@ public final class ClientStateMachine: Sendable {
 
         // PSK extension (must be last if present)
         // If we were doing PSK resumption before HRR, re-add PSK with updated binder
-        var pskExtensionsInfo: (offered: OfferedPsks, ticket: SessionTicketData)?
+        var offeredPsks: OfferedPsks?
+        var pskBinder: TLSClientHandshake<TLSFoundationProvider>.PSKBinderInput?
 
-        if let ticket = state.context.sessionTicket, ticket.isValid(), state.context.pskUsed || state.context.binderKey != nil {
+        if let ticket = state.context.sessionTicket, ticket.isValid(), state.context.pskUsed || preMachine.pskWasOffered {
             // psk_key_exchange_modes (required when offering PSKs)
             extensions.append(.pskKeyExchangeModesList([.psk_dhe_ke]))
 
             // Create the PSK identity from the ticket
             let pskIdentity = PskIdentity(ticket: ticket)
-            let offeredPsks = OfferedPsks(
+            offeredPsks = OfferedPsks(
                 identities: [pskIdentity],
                 binders: [Data(repeating: 0, count: ticket.cipherSuite.hashLength)] // Placeholder
             )
-            pskExtensionsInfo = (offered: offeredPsks, ticket: ticket)
+            pskBinder = TLSClientHandshake<TLSFoundationProvider>.PSKBinderInput(
+                psk: Self.secretBytes(ticket.resumptionPSK),
+                isResumption: true,
+                binderCipherSuite: ticket.cipherSuite
+            )
         }
 
-        var clientHelloMessage: Data
+        // The Embedded-clean core recomputes the PSK binder over the message_hash +
+        // HRR transcript and folds ClientHello2 into the transcript (byte-identical
+        // two-pass build).
+        let clientHello2Bytes = try preMachine.produceClientHello2(
+            random: [UInt8](clientRandom),
+            legacySessionID: [UInt8](sessionID),
+            cipherSuites: state.context.offeredCipherSuites,
+            extensions: extensions,
+            offeredPsks: offeredPsks,
+            pskBinder: pskBinder
+        )
 
-        if let pskInfo = pskExtensionsInfo {
-            var offeredPsks = pskInfo.offered
-
-            // First pass: Build ClientHello with placeholder binders
-            var extensionsWithPsk = extensions
-            extensionsWithPsk.append(.preSharedKeyClient(offeredPsks))
-
-            let placeholderClientHello = try ClientHello(
-                random: clientRandom,
-                legacySessionID: sessionID,
-                cipherSuites: state.context.offeredCipherSuites,
-                extensions: extensionsWithPsk
-            )
-
-            // Encode to compute binder
-            let clientHelloWithPlaceholder = placeholderClientHello.encodeAsHandshake()
-
-            // Compute the truncated transcript (excluding binders)
-            let bindersSectionSize = offeredPsks.bindersSize
-            let truncatedClientHello = clientHelloWithPlaceholder.prefix(
-                clientHelloWithPlaceholder.count - bindersSectionSize
-            )
-
-            // Compute binder using current transcript (which includes message_hash + HRR)
-            var transcriptHashForBinder = state.context.transcriptHash
-            transcriptHashForBinder.update(with: Data(truncatedClientHello))
-
-            let binderKey = try state.context.keySchedule.deriveBinderKey(isResumption: true)
-            let transcriptHash = transcriptHashForBinder.currentHash()
-            let finishedKeyForBinder = state.context.keySchedule.finishedKey(from: binderKey)
-            let binder = state.context.keySchedule.finishedVerifyData(
-                forKey: finishedKeyForBinder,
-                transcriptHash: transcriptHash
-            )
-
-            // Second pass: Rebuild ClientHello with correct binders
-            offeredPsks.binders = [[UInt8](binder)]
-
-            var finalExtensions = extensions
-            finalExtensions.append(.preSharedKeyClient(offeredPsks))
-
-            let finalClientHello = try ClientHello(
-                random: clientRandom,
-                legacySessionID: sessionID,
-                cipherSuites: state.context.offeredCipherSuites,
-                extensions: finalExtensions
-            )
-
-            clientHelloMessage = finalClientHello.encodeAsHandshake()
-        } else {
-            // Standard ClientHello2 without PSK
-            let clientHello = try ClientHello(
-                random: clientRandom,
-                legacySessionID: sessionID,
-                cipherSuites: state.context.offeredCipherSuites,
-                extensions: extensions
-            )
-            clientHelloMessage = clientHello.encodeAsHandshake()
-        }
-
-        // Update transcript
-        state.context.transcriptHash.update(with: clientHelloMessage)
-
-        return clientHelloMessage
+        return Data(clientHello2Bytes)
     }
 
     // MARK: - Process EncryptedExtensions
