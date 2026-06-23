@@ -6,6 +6,7 @@
 
 import Foundation
 import TLSCore
+import DTLSHandshakeCore
 
 /// Client handshake state
 public enum DTLSClientState: Sendable, Equatable {
@@ -39,6 +40,21 @@ public enum DTLSClientState: Sendable, Equatable {
 
     /// Error state
     case failed(String)
+
+    /// Bridge from the Embedded-clean FSM state.
+    init(core: DTLSClientHandshake<TLSFoundationProvider>.ClientState) {
+        switch core {
+        case .idle: self = .idle
+        case .waitingServerHello: self = .waitingServerHello
+        case .waitingServerHelloWithCookie: self = .waitingServerHelloWithCookie
+        case .waitingCertificate: self = .waitingCertificate
+        case .waitingServerKeyExchange: self = .waitingServerKeyExchange
+        case .waitingServerHelloDone: self = .waitingServerHelloDone
+        case .waitingChangeCipherSpec: self = .waitingChangeCipherSpec
+        case .waitingFinished: self = .waitingFinished
+        case .connected: self = .connected
+        }
+    }
 }
 
 /// Client handshake context — mutable state accumulated during handshake

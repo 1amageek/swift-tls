@@ -25,6 +25,7 @@ let package = Package(
         .library(name: "TLSCryptoCore", targets: ["TLSCryptoCore"]),
         .library(name: "TLSHandshakeCore", targets: ["TLSHandshakeCore"]),
         .library(name: "DTLSWireCore", targets: ["DTLSWireCore"]),
+        .library(name: "DTLSHandshakeCore", targets: ["DTLSHandshakeCore"]),
         .library(name: "TLSRecordCore", targets: ["TLSRecordCore"]),
         .library(name: "DTLSRecordCore", targets: ["DTLSRecordCore"]),
         .library(name: "TLSCore", targets: ["TLSCore"]),
@@ -81,6 +82,18 @@ let package = Package(
             path: "Sources/DTLSWireCore",
             swiftSettings: coreSettings
         ),
+        // ---- Embedded-clean DTLS 1.2 handshake FSM + key schedule (dual-build) ----
+        .target(
+            name: "DTLSHandshakeCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                "TLSWireCore",
+                "DTLSWireCore",
+            ],
+            path: "Sources/DTLSHandshakeCore",
+            swiftSettings: coreSettings
+        ),
         // ---- Embedded-clean TLS record-layer codec + AEAD protector (dual-build) ----
         .target(
             name: "TLSRecordCore",
@@ -132,6 +145,9 @@ let package = Package(
             dependencies: [
                 "TLSCore",
                 "DTLSWireCore",
+                "DTLSHandshakeCore",
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
             ],
