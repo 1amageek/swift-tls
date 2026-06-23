@@ -4,6 +4,7 @@
 
 import Foundation
 import Crypto
+import P2PCoreBytes
 
 // MARK: - TLS Signature
 
@@ -21,8 +22,10 @@ public enum TLSSignature {
         data: Data,
         privateKey: P256.Signing.PrivateKey
     ) throws -> Data {
-        let signature = try privateKey.signature(for: data)
-        return Data(signature.derRepresentation)
+        let message = [UInt8](data)
+        let signing = try TLSFoundationP256Signature.signingKey(
+            rawRepresentation: [UInt8](privateKey.rawRepresentation).span)
+        return Data(try TLSFoundationP256Signature.sign(message.span, with: signing))
     }
 
     /// Sign data using the specified scheme
@@ -58,8 +61,12 @@ public enum TLSSignature {
         for data: Data,
         publicKey: P256.Signing.PublicKey
     ) throws -> Bool {
-        let sig = try P256.Signing.ECDSASignature(derRepresentation: signature)
-        return publicKey.isValidSignature(sig, for: data)
+        let verifying = try TLSFoundationP256Signature.verifyingKey(
+            rawRepresentation: [UInt8](publicKey.x963Representation).span)
+        return TLSFoundationP256Signature.isValid(
+            signature: [UInt8](signature).span,
+            for: [UInt8](data).span,
+            with: verifying)
     }
 
     /// Verify a signature using the specified scheme
@@ -137,17 +144,27 @@ public enum SigningKey: TLSSigningKey, Sendable {
         }
     }
 
-    /// Sign data
+    /// Sign data.
+    ///
+    /// Routes through the `P2PCoreCrypto.SignatureScheme` seam (the
+    /// `TLSFoundation*Signature` backends) so signing shares the exact code path
+    /// `TLSCryptoCore.TLSSignatureSigner` uses. Byte-format-identical to the legacy
+    /// direct-CryptoKit path: ECDSA → DER, Ed25519 → raw 64-byte signature.
     public func sign(_ data: Data) throws -> Data {
+        let message = [UInt8](data)
         switch self {
         case .p256(let key):
-            return try TLSSignature.sign(data: data, privateKey: key)
+            let signing = try TLSFoundationP256Signature.signingKey(
+                rawRepresentation: [UInt8](key.rawRepresentation).span)
+            return Data(try TLSFoundationP256Signature.sign(message.span, with: signing))
         case .p384(let key):
-            let signature = try key.signature(for: data)
-            return Data(signature.derRepresentation)
+            let signing = try TLSFoundationP384Signature.signingKey(
+                rawRepresentation: [UInt8](key.rawRepresentation).span)
+            return Data(try TLSFoundationP384Signature.sign(message.span, with: signing))
         case .ed25519(let key):
-            let signature = try key.signature(for: data)
-            return Data(signature)
+            let signing = try TLSFoundationEd25519.signingKey(
+                rawRepresentation: [UInt8](key.rawRepresentation).span)
+            return Data(try TLSFoundationEd25519.sign(message.span, with: signing))
         }
     }
 
@@ -213,16 +230,33 @@ public enum VerificationKey: TLSVerificationKey, Sendable {
         }
     }
 
-    /// Verify a signature
+    /// Verify a signature.
+    ///
+    /// Routes through the `P2PCoreCrypto.SignatureScheme` seam (the
+    /// `TLSFoundation*Signature` backends) so verification shares the exact code
+    /// path `TLSCryptoCore.TLSSignatureVerifier` uses. An invalid signature is an
+    /// explicit `false` — never a silent accept (RFC 8446 §4.4.3 proof of
+    /// possession). Byte-input-identical to the legacy direct-CryptoKit path
+    /// (ECDSA DER, Ed25519 raw).
     public func verify(signature: Data, for data: Data) throws -> Bool {
+        let sig = [UInt8](signature)
+        let message = [UInt8](data)
         switch self {
         case .p256(let key):
-            return try TLSSignature.verify(signature: signature, for: data, publicKey: key)
+            let verifying = try TLSFoundationP256Signature.verifyingKey(
+                rawRepresentation: [UInt8](key.x963Representation).span)
+            return TLSFoundationP256Signature.isValid(
+                signature: sig.span, for: message.span, with: verifying)
         case .p384(let key):
-            let sig = try P384.Signing.ECDSASignature(derRepresentation: signature)
-            return key.isValidSignature(sig, for: data)
+            let verifying = try TLSFoundationP384Signature.verifyingKey(
+                rawRepresentation: [UInt8](key.x963Representation).span)
+            return TLSFoundationP384Signature.isValid(
+                signature: sig.span, for: message.span, with: verifying)
         case .ed25519(let key):
-            return key.isValidSignature(signature, for: data)
+            let verifying = try TLSFoundationEd25519.verifyingKey(
+                rawRepresentation: [UInt8](key.rawRepresentation).span)
+            return TLSFoundationEd25519.isValid(
+                signature: sig.span, for: message.span, with: verifying)
         }
     }
 }

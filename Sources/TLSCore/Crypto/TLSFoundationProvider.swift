@@ -9,10 +9,15 @@
 /// Embedded core) because the shared `P2PCryptoFoundation.FoundationCryptoProvider`
 /// pulls a vendored swift-crypto whose `.macOS(.v26)` platform floor is
 /// incompatible with swift-tls's swift-certificates (`.macOS(.v12)`) graph — the
-/// same constraint that forced `QUICFoundationProvider` in swift-quic. The key
-/// schedule needs only the hash / HKDF / HMAC primitives; those are implemented
-/// faithfully. AEAD, key agreement, signatures, header protection, random, and
-/// clock are not used by the key schedule and throw
+/// same constraint that forced `QUICFoundationProvider` in swift-quic. The hash /
+/// HKDF / HMAC primitives back the key schedule; the X25519 / P-256 / P-384 key
+/// agreement and Ed25519 / ECDSA-P256 / ECDSA-P384 signature schemes back
+/// `TLSKeyExchange` and `TLSSignature{Signer,Verifier}` — all implemented
+/// faithfully and byte-identically to the legacy direct-swift-crypto paths
+/// (`KeyExchange.swift`, `Signature.swift`). ECDSA signatures use the DER
+/// encoding the TLS wire format requires, matching the legacy CertificateVerify
+/// bytes exactly. AEAD, header protection, random, and clock are not used by these
+/// seam paths; AEAD/header-protection throw
 /// ``P2PCoreCrypto/CryptoError/unsupportedParameter`` rather than fabricate a
 /// result (no silent fallback).
 
@@ -39,13 +44,13 @@ public enum TLSFoundationProvider: CryptoProvider {
     public typealias HMACSHA256 = TLSFoundationHMACSHA256
     public typealias HMACSHA384 = TLSFoundationHMACSHA384
 
-    public typealias X25519        = TLSFoundationUnsupportedAgreement
-    public typealias P256Agreement = TLSFoundationUnsupportedAgreement
-    public typealias P384Agreement = TLSFoundationUnsupportedAgreement
+    public typealias X25519        = TLSFoundationX25519
+    public typealias P256Agreement = TLSFoundationP256Agreement
+    public typealias P384Agreement = TLSFoundationP384Agreement
 
-    public typealias Ed25519       = TLSFoundationUnsupportedSignature
-    public typealias P256Signature = TLSFoundationUnsupportedSignature
-    public typealias P384Signature = TLSFoundationUnsupportedSignature
+    public typealias Ed25519       = TLSFoundationEd25519
+    public typealias P256Signature = TLSFoundationP256Signature
+    public typealias P384Signature = TLSFoundationP384Signature
 
     public typealias Random           = TLSFoundationRandom
     public typealias Clock            = TLSFoundationClock
@@ -206,43 +211,6 @@ public struct TLSFoundationUnsupportedAEAD: P2PCoreCrypto.AEAD {
     }
     public func open(_ ciphertext: Span<UInt8>, nonce: Span<UInt8>, aad: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> [UInt8] {
         throw .unsupportedParameter
-    }
-}
-
-/// The key schedule performs no key agreement; this placeholder throws rather
-/// than fabricate a key (no silent fallback). TLS key exchange uses swift-crypto
-/// directly in `KeyExchange.swift`, not this seam.
-public enum TLSFoundationUnsupportedAgreement: P2PCoreCrypto.KeyAgreement {
-    public struct PrivateKey: Sendable {}
-    public struct PublicKey: Sendable {}
-    public static func generatePrivateKey() throws(P2PCoreCrypto.CryptoError) -> PrivateKey { throw .unsupportedParameter }
-    public static func privateKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PrivateKey { throw .unsupportedParameter }
-    public static func publicKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PublicKey { throw .unsupportedParameter }
-    public static func publicKey(for privateKey: PrivateKey) -> PublicKey { PublicKey() }
-    public static func rawRepresentation(of privateKey: PrivateKey) -> [UInt8] { [] }
-    public static func rawRepresentation(of publicKey: PublicKey) -> [UInt8] { [] }
-    public static func sharedSecret(privateKey: PrivateKey, peerPublicKey: PublicKey) throws(P2PCoreCrypto.CryptoError) -> [UInt8] {
-        throw .keyAgreementFailure
-    }
-}
-
-/// The key schedule performs no signing; this placeholder throws rather than
-/// fabricate a signature (no silent fallback). TLS CertificateVerify uses
-/// swift-crypto directly in `Signature.swift`, not this seam.
-public enum TLSFoundationUnsupportedSignature: P2PCoreCrypto.SignatureScheme {
-    public struct SigningKey: Sendable {}
-    public struct VerifyingKey: Sendable {}
-    public static func generateSigningKey() throws(P2PCoreCrypto.CryptoError) -> SigningKey { throw .unsupportedParameter }
-    public static func signingKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> SigningKey { throw .unsupportedParameter }
-    public static func verifyingKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> VerifyingKey { throw .unsupportedParameter }
-    public static func verifyingKey(for signingKey: SigningKey) -> VerifyingKey { VerifyingKey() }
-    public static func rawRepresentation(of signingKey: SigningKey) -> [UInt8] { [] }
-    public static func rawRepresentation(of verifyingKey: VerifyingKey) -> [UInt8] { [] }
-    public static func sign(_ message: Span<UInt8>, with signingKey: SigningKey) throws(P2PCoreCrypto.CryptoError) -> [UInt8] {
-        throw .unsupportedParameter
-    }
-    public static func isValid(signature: Span<UInt8>, for message: Span<UInt8>, with verifyingKey: VerifyingKey) -> Bool {
-        false
     }
 }
 

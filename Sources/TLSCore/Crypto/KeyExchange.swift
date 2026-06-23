@@ -5,6 +5,9 @@
 
 import Foundation
 import Crypto
+import P2PCoreBytes
+import TLSWireCore
+import TLSCryptoCore
 
 // MARK: - Hybrid Group Constants
 
@@ -126,24 +129,24 @@ public enum KeyExchange: Sendable {
             guard peerPublicKeyBytes.count == 32 else {
                 throw KeyExchangeError.invalidPublicKey("X25519 public key must be 32 bytes")
             }
-            let peerPublicKey = try Curve25519.KeyAgreement.PublicKey(
-                rawRepresentation: peerPublicKeyBytes
-            )
-            return KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: peerPublicKey))
+            return try dhSharedSecret(
+                group: .x25519,
+                privateKeyBytes: [UInt8](privateKey.rawRepresentation),
+                peerPublicKeyBytes: peerPublicKeyBytes)
 
         case .p256(let privateKey):
             // P-256 uses x963 representation (uncompressed point)
-            let peerPublicKey = try P256.KeyAgreement.PublicKey(
-                x963Representation: peerPublicKeyBytes
-            )
-            return KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: peerPublicKey))
+            return try dhSharedSecret(
+                group: .secp256r1,
+                privateKeyBytes: [UInt8](privateKey.rawRepresentation),
+                peerPublicKeyBytes: peerPublicKeyBytes)
 
         case .p384(let privateKey):
             // P-384 uses x963 representation (uncompressed point)
-            let peerPublicKey = try P384.KeyAgreement.PublicKey(
-                x963Representation: peerPublicKeyBytes
-            )
-            return KeyExchangeSecret(try privateKey.sharedSecretFromKeyAgreement(with: peerPublicKey))
+            return try dhSharedSecret(
+                group: .secp384r1,
+                privateKeyBytes: [UInt8](privateKey.rawRepresentation),
+                peerPublicKeyBytes: peerPublicKeyBytes)
 
         case .x25519MLKEM768(let mlkemSeed, _, let x25519):
             guard peerPublicKeyBytes.count == X25519MLKEM768Sizes.serverShare else {
@@ -253,6 +256,33 @@ public enum KeyExchange: Sendable {
     /// Create a KeyShareEntry for this key exchange
     public func keyShareEntry() -> KeyShareEntry {
         KeyShareEntry(group: group, keyExchange: publicKeyBytes)
+    }
+}
+
+// MARK: - Seam Bridge ((EC)DHE through TLSCryptoCore)
+
+extension KeyExchange {
+    /// Computes a Diffie-Hellman shared secret through the Embedded-clean
+    /// `TLSKeyExchange<TLSFoundationProvider>` core, which routes the agreement
+    /// through the `CryptoProvider.KeyAgreement` seam. Byte-identical to the legacy
+    /// direct-CryptoKit path (see `TLSKeyExchangeSignatureSeamDifferentialTests`).
+    /// A core failure is surfaced as `KeyExchangeError.keyAgreementFailed` rather
+    /// than being swallowed (no silent fallback).
+    private func dhSharedSecret(
+        group: NamedGroup,
+        privateKeyBytes: [UInt8],
+        peerPublicKeyBytes: Data
+    ) throws -> KeyExchangeSecret {
+        let peerBytes = [UInt8](peerPublicKeyBytes)
+        do {
+            let secret = try TLSKeyExchange<TLSFoundationProvider>.sharedSecret(
+                group: group,
+                privateKeyBytes: privateKeyBytes.span,
+                peerPublicKeyBytes: peerBytes.span)
+            return KeyExchangeSecret(rawRepresentation: Data(secret))
+        } catch {
+            throw KeyExchangeError.keyAgreementFailed("(EC)DHE failed for \(group): \(error)")
+        }
     }
 }
 
