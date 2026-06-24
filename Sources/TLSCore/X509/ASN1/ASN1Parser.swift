@@ -28,8 +28,24 @@ public struct ASN1Parser: Sendable {
 
     // MARK: - Public API
 
+    /// Maximum nesting depth for constructed TLVs.
+    ///
+    /// DER-encoded structures encountered in TLS/X.509 (certificates, OCSP
+    /// responses, CRLs) are shallow in practice. A hard cap bounds the parser's
+    /// stack usage so a small, deeply-nested input (e.g. `30 80 30 80 …`) is
+    /// rejected with a typed throw instead of triggering a stack-overflow crash.
+    static let maxDepth = 64
+
     /// Parses the next TLV (Tag-Length-Value) from the data
     public mutating func parse() throws -> ASN1Value {
+        try parse(depth: 0)
+    }
+
+    private mutating func parse(depth: Int) throws -> ASN1Value {
+        guard depth <= ASN1Parser.maxDepth else {
+            throw ASN1Error.invalidFormat("ASN.1 nesting depth exceeds maximum of \(ASN1Parser.maxDepth)")
+        }
+
         let startPos = position
 
         // Read tag
@@ -38,11 +54,17 @@ public struct ASN1Parser: Sendable {
         // Read length
         let length = try readLength()
 
-        // Calculate end position
-        let endPos = position + length
-        guard endPos <= data.endIndex else {
+        // Validate the content fits WITHOUT computing `position + length`, which
+        // could overflow and trap: `readLength` only caps `length <= Int.max >> 8`,
+        // so a long-form length such as `0x88 FF FF … 00` makes the checked add
+        // overflow before any bounds guard runs. `position <= data.endIndex` always
+        // holds here, so `data.endIndex - position` is a safe non-negative subtraction.
+        guard length <= data.endIndex - position else {
             throw ASN1Error.unexpectedEndOfData
         }
+
+        // `endPos` is now proven `<= data.endIndex`, so this add cannot overflow.
+        let endPos = position + length
 
         // Get raw bytes for this TLV
         let rawBytes = data[startPos..<endPos]
@@ -50,11 +72,11 @@ public struct ASN1Parser: Sendable {
         // Read content
         if tag.isConstructed {
             // Parse children
-            let contentEnd = position + length
+            let contentEnd = endPos
             var children: [ASN1Value] = []
 
             while position < contentEnd {
-                let child = try parse()
+                let child = try parse(depth: depth + 1)
                 children.append(child)
             }
 

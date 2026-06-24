@@ -112,6 +112,7 @@ package enum DTLSConnectionError: Error, Sendable {
     case handshakeAlreadyStarted
     case connectionClosed
     case fatalProtocolError(String)
+    case concurrentProcessingNotAllowed
 }
 
 extension DTLSConnectionError: CustomStringConvertible {
@@ -127,6 +128,8 @@ extension DTLSConnectionError: CustomStringConvertible {
             return "Connection closed"
         case .fatalProtocolError(let reason):
             return "Fatal protocol error: \(reason)"
+        case .concurrentProcessingNotAllowed:
+            return "Concurrent datagram processing is not allowed on a single connection"
         }
     }
 }
@@ -145,6 +148,14 @@ package final class DTLSConnection: Sendable {
     private struct ConnectionState: Sendable {
         var handshakeStarted: Bool = false
         var handshakeCompleted: Bool = false
+
+        // Re-entrancy guard for `processReceivedDatagram`. Each shared object
+        // (recordLayer / flightController / handlers) is independently
+        // Mutex-synced, so concurrent calls are memory-safe, but they would
+        // interleave at handshake-message granularity and corrupt the logical
+        // handshake sequence. This guard serializes datagram processing the same
+        // way `TLSConnection.readState.isProcessing` does. See TLSConnection.swift.
+        var isProcessing: Bool = false
         var isClient: Bool = false
         var clientHandler: DTLSClientHandshakeHandler?
         var serverHandler: DTLSServerHandshakeHandler?
@@ -238,10 +249,24 @@ package final class DTLSConnection: Sendable {
         _ data: Data,
         remoteAddress: Data = Data()
     ) throws -> DTLSConnectionOutput {
-        // Check connection state
+        // Check connection state and claim the re-entrancy guard atomically.
+        // RFC 6347 datagram processing reads/writes the record layer, flight
+        // controller, and handlers across several short lock windows; two
+        // concurrent calls would interleave at handshake-message granularity and
+        // corrupt the logical handshake sequence. Reject re-entrant calls.
         try state.withLock { s in
             if let err = s.fatalError { throw err }
             if s.closed { throw DTLSConnectionError.connectionClosed }
+            guard !s.isProcessing else {
+                throw DTLSConnectionError.concurrentProcessingNotAllowed
+            }
+            s.isProcessing = true
+        }
+
+        // Ensure the guard is cleared on every exit path (including the early
+        // returns for close_notify / fatal alert below).
+        defer {
+            state.withLock { $0.isProcessing = false }
         }
 
         // Get handler references (quick lock, then release)

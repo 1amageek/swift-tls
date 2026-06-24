@@ -120,4 +120,84 @@ struct ParserHardeningTests {
         #expect(!schemes.contains(.rsa_pss_rsae_sha512))
         #expect(schemes.contains(.ecdsa_secp256r1_sha256))
     }
+
+    // MARK: - ASN.1 DER Parser Hardening (ITU-T X.690)
+    //
+    // The local ASN1Parser is reached via OCSP / CRL revocation checking
+    // (CertificateRevocation.swift), gated behind `revocationCheckMode`. Malformed
+    // DER from a peer must produce a typed throw, never a runtime trap.
+
+    @Test("ASN.1 long-form length that would overflow position+length throws, not traps")
+    func asn1LongFormLengthOverflowThrows() {
+        // SEQUENCE tag (0x30), then a long-form length: 0x88 says "8 length bytes
+        // follow". The encoded length is ~0xFFFFFFFFFFFFFF00, far larger than any
+        // buffer. With the old `position + length` add this overflowed `Int` and
+        // trapped before the bounds guard; it must now throw `unexpectedEndOfData`.
+        let malformed = Data([
+            0x30,                                           // SEQUENCE
+            0x88,                                           // long form, 8 length bytes
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 // length ≈ 2^63-ish
+        ])
+        #expect(throws: ASN1Error.self) {
+            _ = try ASN1Parser.parseOne(from: malformed)
+        }
+    }
+
+    @Test("ASN.1 deeply-nested constructed TLVs throw at the depth cap, not stack-overflow")
+    func asn1DeepNestingThrows() {
+        // A chain of constructed SEQUENCEs each declaring a 1-byte body that is
+        // itself another SEQUENCE: `30 01 30 01 30 01 …`. Nesting far past the cap
+        // (64) would recurse unboundedly and overflow the stack without a limit.
+        let nestingCount = 512
+        var deeplyNested = Data()
+        for _ in 0..<nestingCount {
+            deeplyNested.append(contentsOf: [0x30, 0x01]) // SEQUENCE, length 1
+        }
+        // Innermost content byte (a NULL-ish placeholder) so the last length is satisfiable.
+        deeplyNested.append(0x00)
+
+        #expect(throws: ASN1Error.self) {
+            _ = try ASN1Parser.parseOne(from: deeplyNested)
+        }
+    }
+
+    @Test("ASN.1 well-formed nested structure within the depth cap still parses")
+    func asn1WellFormedStructureParses() throws {
+        // SEQUENCE { INTEGER 1, OCTET STRING "AB" } — a normal, shallow structure
+        // representative of the TLVs OCSP/CRL parsing encounters.
+        let inner = ASN1Builder.integer(1) + ASN1Builder.octetString(Data([0x41, 0x42]))
+        let der = ASN1Builder.sequence([inner])
+
+        let value = try ASN1Parser.parseOne(from: der)
+        #expect(value.tag.tagNumber == ASN1Tag.sequence.tagNumber)
+        #expect(value.children.count == 2)
+        #expect(value.children[0].tag.tagNumber == ASN1Tag.integer.tagNumber)
+        #expect(value.children[1].tag.tagNumber == ASN1Tag.octetString.tagNumber)
+        #expect(value.children[1].content == Data([0x41, 0x42]))
+    }
+
+    @Test("ASN.1 nesting exactly at the depth cap parses; one deeper throws")
+    func asn1DepthCapBoundary() throws {
+        // Build a chain of `maxDepth` nested SEQUENCEs wrapping a single INTEGER.
+        // The root parse is depth 0, so `maxDepth` levels of nesting are accepted.
+        func nest(_ payload: Data, times: Int) -> Data {
+            var current = payload
+            for _ in 0..<times {
+                current = ASN1Builder.sequence([current])
+            }
+            return current
+        }
+        let leaf = ASN1Builder.integer(7)
+
+        // `maxDepth` wrapping SEQUENCEs: the deepest child is parsed at depth == maxDepth.
+        let atCap = nest(leaf, times: ASN1Parser.maxDepth)
+        let parsed = try ASN1Parser.parseOne(from: atCap)
+        #expect(parsed.tag.tagNumber == ASN1Tag.sequence.tagNumber)
+
+        // One level deeper must be rejected at the cap.
+        let pastCap = nest(leaf, times: ASN1Parser.maxDepth + 1)
+        #expect(throws: ASN1Error.self) {
+            _ = try ASN1Parser.parseOne(from: pastCap)
+        }
+    }
 }

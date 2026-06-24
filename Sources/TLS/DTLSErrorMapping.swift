@@ -23,6 +23,8 @@ extension TLSError {
                 return .connectionClosed
             case .fatalProtocolError(let reason):
                 return .protocolFailure(reason: reason)
+            case .concurrentProcessingNotAllowed:
+                return .internalError(reason: "Concurrent DTLS datagram processing is not allowed")
             }
         case let e as TLSError:
             return e
