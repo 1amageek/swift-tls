@@ -54,6 +54,10 @@ public struct TLSServerEngine<C: CryptoProvider>: Sendable {
     var helloRetryRequestGroup: NamedGroup?
     var clientCertificateListDER: [[UInt8]]
     var clientHelloPeerKey: (bytes: [UInt8], scheme: TLSWireCore.SignatureScheme)?
+    /// The validated peer's application identifier bytes (e.g. an encoded libp2p
+    /// PeerID), returned by the injected `validateCertificate` strategy. `nil` until
+    /// the validator runs, or when it established trust without an identifier.
+    var validatedPeerIdentifier: [UInt8]?
     public internal(set) var peerTransportParameters: [UInt8]?
 
     // MARK: - Record layer (driver-owned, caller-locked)
@@ -106,6 +110,7 @@ public struct TLSServerEngine<C: CryptoProvider>: Sendable {
         self.helloRetryRequestGroup = nil
         self.clientCertificateListDER = []
         self.clientHelloPeerKey = nil
+        self.validatedPeerIdentifier = nil
         self.peerTransportParameters = nil
         self.recordCipherSuite = nil
         self.sendProtector = nil
@@ -126,6 +131,11 @@ public struct TLSServerEngine<C: CryptoProvider>: Sendable {
     public var peerCertificates: [[UInt8]]? {
         clientCertificateListDER.isEmpty ? nil : clientCertificateListDER
     }
+
+    /// The validated peer's application identifier bytes (e.g. an encoded libp2p
+    /// PeerID) produced by the injected certificate validator, or `nil` when no
+    /// validator ran or it established trust without an identifier.
+    public var peerIdentifier: [UInt8]? { validatedPeerIdentifier }
 
     // MARK: - startHandshake
 

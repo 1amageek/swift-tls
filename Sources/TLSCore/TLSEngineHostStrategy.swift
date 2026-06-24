@@ -79,10 +79,13 @@ extension TLSConfiguration {
         let revocation = revocationCheckMode
         let roots = trustedRootCertificates ?? []
         let host = serverName
-        let validator = certificateValidator
+        // The engine path uses the identifier-bytes validator (Embedded-clean
+        // `[UInt8]?`), supplied by the facade bridge; the legacy `certificateValidator`
+        // existential closure is not threaded into the engine.
+        let validator = peerIdentifierValidator
         let expected = expectedPeerPublicKey
         let pTypes = peerCertificateTypes
-        engine.validateCertificate = { @Sendable (chain: [[UInt8]]) throws(TLSEngineError) -> Void in
+        engine.validateCertificate = { @Sendable (chain: [[UInt8]]) throws(TLSEngineError) -> [UInt8]? in
             try Self.validateCertificate(
                 chain: chain,
                 validatingServerPeer: validatingServerPeer,
@@ -156,8 +159,8 @@ extension TLSConfiguration {
         hostname: String?,
         expectedPeerPublicKey: Data?,
         peerCertificateTypes: [CertificateType],
-        userValidator: CertificateValidator?
-    ) throws(TLSEngineError) {
+        userValidator: (@Sendable ([Data]) throws -> [UInt8]?)?
+    ) throws(TLSEngineError) -> [UInt8]? {
         // X.509 chain trust: gated by verifyPeer, only for X.509 leaves (the
         // raw-public-key path evaluates trust in resolvePeerKey / config), and
         // skipped when an explicit expected key is configured (raw-key mode).
@@ -190,13 +193,16 @@ extension TLSConfiguration {
 
         // User hook (libp2p PeerID extraction). Runs regardless of verifyPeer,
         // after the in-core proof-of-possession check. A throw aborts fail-closed.
+        // Its returned identifier bytes (e.g. the libp2p PeerID) are propagated so
+        // the engine can surface `peerIdentifier`.
         if let userValidator {
             let certs = chain.map { Data($0) }
             do {
-                _ = try userValidator(certs)
+                return try userValidator(certs)
             } catch {
                 throw .verificationFailed(reason: "custom certificate validator rejected the peer")
             }
         }
+        return nil
     }
 }

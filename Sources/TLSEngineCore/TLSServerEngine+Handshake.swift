@@ -540,11 +540,12 @@ extension TLSServerEngine {
         serverMachine = machine
 
         // Run the injected validation strategy (X.509 chain / user-hook) AFTER the
-        // in-core proof-of-possession signature check, fail-closed.
+        // in-core proof-of-possession signature check, fail-closed. Its returned
+        // identifier (e.g. the libp2p PeerID) is recorded for `peerIdentifier`.
         if let validate = configuration.validateCertificate {
             let chain = currentClientCertificateListDER()
             if configuration.verifyPeer || !chain.isEmpty {
-                try validate(chain)
+                validatedPeerIdentifier = try validate(chain)
             }
         }
 

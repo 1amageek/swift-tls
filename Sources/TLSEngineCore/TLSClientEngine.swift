@@ -83,6 +83,10 @@ public struct TLSClientEngine<C: CryptoProvider>: Sendable {
     var peerCertificateListDER: [[UInt8]]
     /// Whether the peer presented a non-empty Certificate.
     var peerCertificatePresented: Bool
+    /// The validated peer's application identifier bytes (e.g. an encoded libp2p
+    /// PeerID), returned by the injected `validateCertificate` strategy. `nil` until
+    /// the validator runs, or when it established trust without an identifier.
+    var validatedPeerIdentifier: [UInt8]?
     /// Peer transport parameters (e.g. QUIC), surfaced post-handshake.
     public internal(set) var peerTransportParameters: [UInt8]?
 
@@ -129,6 +133,7 @@ public struct TLSClientEngine<C: CryptoProvider>: Sendable {
         self.clientCertificateRequested = false
         self.peerCertificateListDER = []
         self.peerCertificatePresented = false
+        self.validatedPeerIdentifier = nil
         self.peerTransportParameters = nil
         self.recordCipherSuite = nil
         self.sendProtector = nil
@@ -155,6 +160,11 @@ public struct TLSClientEngine<C: CryptoProvider>: Sendable {
     public var peerCertificates: [[UInt8]]? {
         peerCertificateListDER.isEmpty ? nil : peerCertificateListDER
     }
+
+    /// The validated peer's application identifier bytes (e.g. an encoded libp2p
+    /// PeerID) produced by the injected certificate validator, or `nil` when no
+    /// validator ran or it established trust without an identifier.
+    public var peerIdentifier: [UInt8]? { validatedPeerIdentifier }
 
     // MARK: - startHandshake
 

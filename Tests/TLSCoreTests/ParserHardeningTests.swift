@@ -130,13 +130,18 @@ struct ParserHardeningTests {
     @Test("ASN.1 long-form length that would overflow position+length throws, not traps")
     func asn1LongFormLengthOverflowThrows() {
         // SEQUENCE tag (0x30), then a long-form length: 0x88 says "8 length bytes
-        // follow". The encoded length is ~0xFFFFFFFFFFFFFF00, far larger than any
-        // buffer. With the old `position + length` add this overflowed `Int` and
-        // trapped before the bounds guard; it must now throw `unexpectedEndOfData`.
+        // follow". The encoded length is exactly `Int.max` (0x7FFF...FF), which
+        // PASSES `readLength`'s `length <= Int.max >> 8` cap (the final shift lands
+        // at `Int.max` without overflowing the guard) — so it reaches the reordered
+        // bounds guard `length <= data.endIndex - position`. With the old
+        // `position + length` add that bounds check overflowed `Int` and trapped;
+        // it must now throw `unexpectedEndOfData`. This genuinely exercises the
+        // guard reorder (mirroring the swift-quic twin) rather than being caught by
+        // the readLength cap.
         let malformed = Data([
             0x30,                                           // SEQUENCE
             0x88,                                           // long form, 8 length bytes
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 // length ≈ 2^63-ish
+            0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF // length == Int.max
         ])
         #expect(throws: ASN1Error.self) {
             _ = try ASN1Parser.parseOne(from: malformed)

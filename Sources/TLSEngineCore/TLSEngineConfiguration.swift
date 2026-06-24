@@ -99,7 +99,13 @@ public struct TLSEngineConfiguration<C>: Sendable where C: Sendable {
     /// PeerID extraction) runs. Only invoked when `verifyPeer` is `true` OR a
     /// certificate was presented (matching the legacy adapter). The facade maps its
     /// host validation error (X.509 / user-hook) to `TLSEngineError` at this boundary.
-    public var validateCertificate: (@Sendable (_ certificateListDER: [[UInt8]]) throws(TLSEngineError) -> Void)?
+    ///
+    /// Returns the validated peer's application identifier bytes (e.g. the encoded
+    /// libp2p PeerID derived from the certificate extension), or `nil` when the
+    /// validator established trust without producing an identifier. The engine
+    /// records this so the facade can surface `peerIdentity` after the handshake.
+    /// Embedded-clean: the identifier is plain `[UInt8]`, never an existential.
+    public var validateCertificate: (@Sendable (_ certificateListDER: [[UInt8]]) throws(TLSEngineError) -> [UInt8]?)?
 
     // MARK: - Initialization
 
@@ -122,7 +128,7 @@ public struct TLSEngineConfiguration<C>: Sendable where C: Sendable {
         signingScheme: SignatureScheme? = nil,
         sign: (@Sendable (_ signedContent: [UInt8], _ scheme: SignatureScheme) throws(TLSEngineError) -> [UInt8])? = nil,
         resolvePeerKey: (@Sendable (_ certificateListDER: [[UInt8]]) -> (bytes: [UInt8], scheme: SignatureScheme)?)? = nil,
-        validateCertificate: (@Sendable (_ certificateListDER: [[UInt8]]) throws(TLSEngineError) -> Void)? = nil
+        validateCertificate: (@Sendable (_ certificateListDER: [[UInt8]]) throws(TLSEngineError) -> [UInt8]?)? = nil
     ) {
         self.serverName = serverName
         self.alpnProtocols = alpnProtocols

@@ -61,8 +61,26 @@ public final class TLSServer: Sendable {
     /// The negotiated ALPN protocol, if any.
     public var negotiatedALPN: String? { engine.withLock { $0.negotiatedALPN } }
 
-    /// The application peer identity returned by the certificate validator, if any.
-    public var peerIdentity: PeerIdentity? { nil }
+    /// Peer's DER-encoded certificates (leaf first), if presented. Populated after
+    /// the handshake. X.509 chain validation is the injected validator's job
+    /// (`TLSConfiguration.certificateValidator`); this is the raw chain the engine
+    /// recorded. `nil` if the peer presented no certificate.
+    public var peerCertificates: [[UInt8]]? {
+        engine.withLock { $0.peerCertificates }
+    }
+
+    /// The application peer identity established by the certificate validator, if
+    /// any. Reconstructed from the validator's identifier bytes and the recorded
+    /// peer certificate chain. `nil` when no validator ran or it produced no
+    /// identity (an anonymous handshake stays `nil`); a validator throw fails the
+    /// handshake, so this never surfaces an unverified peer.
+    public var peerIdentity: PeerIdentity? {
+        engine.withLock { engine in
+            guard let identifier = engine.peerIdentifier else { return nil }
+            let certificates = (engine.peerCertificates ?? []).map { Certificate(der: $0) }
+            return PeerIdentity(identifier: identifier, certificates: certificates)
+        }
+    }
 
     private func run<R: Sendable>(
         _ body: (inout TLSServerEngine<TLSCryptoProvider>) throws -> R

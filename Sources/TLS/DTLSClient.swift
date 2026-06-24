@@ -82,4 +82,19 @@ public struct DTLSClient: Sendable {
 
     /// Whether the connection has been closed.
     public var isClosed: Bool { engine.isClosed }
+
+    /// Peer's DER-encoded certificate, if presented. `nil` if the handshake is
+    /// incomplete or no certificate was received. X.509 chain validation is the
+    /// caller's responsibility; this is the raw leaf the engine recorded.
+    /// Currency: `Data` → `[UInt8]` at the facade boundary (consistent with `receive`).
+    public var remoteCertificateDER: [UInt8]? {
+        engine.remoteCertificateDER.map { [UInt8]($0) }
+    }
+
+    /// Peer's SHA-256 certificate fingerprint in RFC 8122 / SDP textual form
+    /// (e.g. `"sha-256 AB:CD:..."`), used for WebRTC DTLS-SRTP peer
+    /// authentication. `nil` if no peer certificate is available.
+    public var remoteFingerprint: String? {
+        engine.remoteFingerprint.map { $0.sdpFormat }
+    }
 }

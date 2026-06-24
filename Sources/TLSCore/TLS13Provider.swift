@@ -266,6 +266,17 @@ public struct TLSConfiguration: Sendable {
     ///   when mutual TLS is enabled.
     public var certificateValidator: CertificateValidator?
 
+    /// Identifier-bytes view of the custom validator for the cored engine path.
+    ///
+    /// The cored `TLSEngineCore` engine is Embedded-clean and cannot carry the
+    /// existential `(any Sendable)?` that `certificateValidator` returns, so the
+    /// facade bridge supplies a parallel closure that runs the SAME validation and
+    /// returns the validated peer's application identifier bytes (e.g. the encoded
+    /// libp2p PeerID), or `nil`. A throw aborts the handshake (fail-closed),
+    /// identical to `certificateValidator`. Set only by the `TLS` facade bridge;
+    /// the legacy `TLS13Handler` path uses `certificateValidator` unchanged.
+    public var peerIdentifierValidator: (@Sendable ([Data]) throws -> [UInt8]?)?
+
     // MARK: - Raw Public Key (RFC 7250) Configuration
 
     /// Certificate types we can present for our own authentication,
@@ -315,6 +326,7 @@ public struct TLSConfiguration: Sendable {
         self.requireClientCertificate = false
         self.sessionTicketStore = nil
         self.certificateValidator = nil
+        self.peerIdentifierValidator = nil
         self.localCertificateTypes = [.x509]
         self.peerCertificateTypes = [.x509]
         self.trustedRawPublicKeys = nil

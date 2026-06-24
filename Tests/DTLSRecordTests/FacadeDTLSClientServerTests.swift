@@ -111,4 +111,29 @@ struct FacadeDTLSClientServerTests {
             _ = try client.send(early.span)
         }
     }
+
+    // MARK: - Peer-certificate / fingerprint surfacing (WebRTC DTLS-SRTP unblock)
+
+    @Test("Completed DTLS handshake surfaces the server's certificate to the client")
+    func handshakeSurfacesRemoteCertificate() throws {
+        let (client, _) = try Self.performHandshake()
+        #expect(client.isEstablished)
+
+        // The client received the server's Certificate during the handshake; its
+        // DER and SHA-256 fingerprint (RFC 8122 / SDP form) must surface.
+        let der = client.remoteCertificateDER
+        #expect(der != nil)
+        #expect(der?.isEmpty == false)
+
+        let fingerprint = client.remoteFingerprint
+        #expect(fingerprint != nil)
+        #expect(fingerprint?.hasPrefix("sha-256 ") == true)
+    }
+
+    @Test("DTLS peer cert is nil before the handshake completes")
+    func remoteCertificateNilBeforeHandshake() throws {
+        let (client, _) = try Self.makeClientServer()
+        #expect(client.remoteCertificateDER == nil)
+        #expect(client.remoteFingerprint == nil)
+    }
 }

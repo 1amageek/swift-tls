@@ -561,7 +561,8 @@ extension TLSClientEngine {
         // presented (the core already ran the proof-of-possession check).
         guard configuration.verifyPeer || !chain.isEmpty else { return }
         // The injected validator is typed `throws(TLSEngineError)`; its failure
-        // (X.509 / user-hook) propagates directly, fail-closed.
-        try validate(chain)
+        // (X.509 / user-hook) propagates directly, fail-closed. Its returned
+        // identifier (e.g. the libp2p PeerID) is recorded for `peerIdentifier`.
+        validatedPeerIdentifier = try validate(chain)
     }
 }

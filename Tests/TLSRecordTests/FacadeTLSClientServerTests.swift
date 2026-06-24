@@ -114,4 +114,61 @@ struct FacadeTLSClientServerTests {
             _ = try await client.send([UInt8]("early".utf8).span)
         }
     }
+
+    // MARK: - Peer-identity / peer-certificate surfacing
+
+    @Test("Completed handshake surfaces the server's peer certificate on the client")
+    func handshakeSurfacesPeerCertificate() async throws {
+        let (client, server) = try await Self.performHandshake()
+        #expect(client.isEstablished)
+        #expect(server.isEstablished)
+
+        // The client received the server's Certificate; its leaf DER must surface
+        // (a non-empty, parseable DER blob).
+        let clientPeerCerts = client.peerCertificates
+        #expect(clientPeerCerts != nil)
+        #expect(clientPeerCerts?.first?.isEmpty == false)
+    }
+
+    @Test("Anonymous handshake (no validator) surfaces nil peerIdentity")
+    func anonymousHandshakeHasNilPeerIdentity() async throws {
+        let (client, server) = try await Self.performHandshake()
+        // No certificateValidator was configured, so no application identity is
+        // produced even though the server cert is present. Fail-closed default.
+        #expect(client.peerIdentity == nil)
+        #expect(server.peerIdentity == nil)
+    }
+
+    @Test("Validator-produced identity surfaces via client.peerIdentity")
+    func validatorIdentitySurfaces() async throws {
+        let identity = try Self.serverIdentity()
+        let expectedIdentifier: [UInt8] = [0x01, 0x02, 0x03, 0x04]
+
+        // The client runs a custom validator that establishes an application
+        // identity from the server's certificate. verifyPeer = false skips X.509
+        // chain trust but the validator still runs (matching the legacy gate).
+        var clientConfig = TLSConfiguration(serverName: "facade-test", verifyPeer: false)
+        clientConfig.certificateValidator = { @Sendable (certificates: [TLS.Certificate]) throws(TLS.TLSError) -> PeerIdentity? in
+            // A real certificate must have been presented.
+            guard let leaf = certificates.first else { return nil }
+            return PeerIdentity(identifier: expectedIdentifier, certificates: [leaf])
+        }
+        let serverConfig = TLSConfiguration.server(identity: identity)
+        let client = try TLSClient(configuration: clientConfig)
+        let server = try TLSServer(configuration: serverConfig)
+
+        let clientHello = try await client.startHandshake()
+        _ = try await server.startHandshake()
+        let serverResponse = try await server.receive(clientHello.span)
+        let clientResponse = try await client.receive(serverResponse.bytesToSend.span)
+        if !clientResponse.bytesToSend.isEmpty {
+            _ = try await server.receive(clientResponse.bytesToSend.span)
+        }
+
+        #expect(client.isEstablished)
+        let surfaced = client.peerIdentity
+        #expect(surfaced != nil)
+        #expect(surfaced?.identifier == expectedIdentifier)
+        #expect(surfaced?.certificates.isEmpty == false)
+    }
 }

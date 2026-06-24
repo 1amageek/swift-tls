@@ -72,6 +72,9 @@ extension TLSConfiguration {
         }
 
         // Custom validator: bridge [Data] -> [Certificate] and PeerIdentity? -> any Sendable?.
+        // The existential `certificateValidator` feeds the legacy `TLS13Handler` path;
+        // the cored engine path uses `peerIdentifierValidator`, which runs the SAME
+        // user validator but surfaces only the Embedded-clean identifier bytes.
         if let validator = certificateValidator {
             engine.certificateValidator = { @Sendable (chain: [Data]) throws -> (any Sendable)? in
                 let certificates = chain.map { Certificate(der: [UInt8]($0)) }
@@ -82,6 +85,16 @@ extension TLSConfiguration {
                     throw tlsError
                 }
                 return identity
+            }
+            engine.peerIdentifierValidator = { @Sendable (chain: [Data]) throws -> [UInt8]? in
+                let certificates = chain.map { Certificate(der: [UInt8]($0)) }
+                let identity: PeerIdentity?
+                do {
+                    identity = try validator(certificates)
+                } catch let tlsError {
+                    throw tlsError
+                }
+                return identity?.identifier
             }
         }
 
