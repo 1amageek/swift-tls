@@ -13,7 +13,7 @@ import TLSHandshakeCore
 // MARK: - TLS 1.3 Handler
 
 /// Pure Swift TLS 1.3 implementation
-public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
+package final class TLS13Handler: TLSTransportParameterProvider, Sendable {
 
     /// Maximum size for handshake message buffers per encryption level.
     /// Default maximum handshake buffer size (256KB).
@@ -680,7 +680,7 @@ public final class TLS13Handler: TLSTransportParameterProvider, Sendable {
 // MARK: - Server State Machine
 
 /// Server-side TLS 1.3 state machine
-public final class ServerStateMachine: Sendable {
+package final class ServerStateMachine: Sendable {
 
     private let state = Mutex<ServerState>(ServerState())
     private let configuration: TLSConfiguration

@@ -8,12 +8,12 @@ import TLSWireCore
 import SwiftASN1
 
 // Type alias to avoid naming conflict with TLS Certificate message
-public typealias X509CertificateBase = X509.Certificate
+package typealias X509CertificateBase = X509.Certificate
 
 // MARK: - X.509 Certificate
 
 /// A parsed X.509 certificate wrapping swift-certificates' Certificate type
-public struct X509Certificate: Sendable {
+package struct X509Certificate: Sendable {
     /// The underlying swift-certificates Certificate
     public let certificate: X509CertificateBase
 
@@ -161,7 +161,7 @@ public struct X509Certificate: Sendable {
 /// Algorithm identifier wrapper for swift-certificates' SignatureAlgorithm
 public struct SignatureAlgorithmIdentifier: Sendable, Equatable {
     /// The underlying SignatureAlgorithm
-    public let signatureAlgorithm: X509CertificateBase.SignatureAlgorithm
+    package let signatureAlgorithm: X509CertificateBase.SignatureAlgorithm
 
     /// Algorithm OID
     public var algorithm: ASN1ObjectIdentifier {
@@ -179,7 +179,7 @@ public struct SignatureAlgorithmIdentifier: Sendable, Equatable {
         }
     }
 
-    public init(_ signatureAlgorithm: X509CertificateBase.SignatureAlgorithm) {
+    package init(_ signatureAlgorithm: X509CertificateBase.SignatureAlgorithm) {
         self.signatureAlgorithm = signatureAlgorithm
     }
 
@@ -217,7 +217,7 @@ public struct SignatureAlgorithmIdentifier: Sendable, Equatable {
 // MARK: - X.509 Name
 
 /// X.509 Distinguished Name (DN) wrapper
-public struct X509Name: Sendable, Equatable, Hashable {
+package struct X509Name: Sendable, Equatable, Hashable {
     /// The underlying DistinguishedName
     public let distinguishedName: DistinguishedName
 
@@ -288,7 +288,7 @@ public struct X509Name: Sendable, Equatable, Hashable {
 // MARK: - X.509 Validity
 
 /// Certificate validity period
-public struct X509Validity: Sendable {
+package struct X509Validity: Sendable {
     /// Not valid before this time
     public let notBefore: Date
 

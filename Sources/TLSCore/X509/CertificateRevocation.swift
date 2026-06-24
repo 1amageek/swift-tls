@@ -149,7 +149,7 @@ public struct RevocationChecker: Sendable {
     ///   - certificate: The certificate to check
     ///   - issuer: The issuer's certificate
     /// - Returns: The revocation status
-    public func checkStapledOCSPResponse(
+    package func checkStapledOCSPResponse(
         _ response: Data,
         for certificate: X509Certificate,
         issuer: X509Certificate
@@ -164,7 +164,7 @@ public struct RevocationChecker: Sendable {
     ///   - issuer: The issuer's certificate (needed for OCSP)
     ///   - ocspResponse: Pre-fetched OCSP response (from TLS stapling)
     /// - Returns: The revocation status
-    public func checkRevocation(
+    package func checkRevocation(
         _ certificate: X509Certificate,
         issuer: X509Certificate,
         ocspResponse: Data? = nil

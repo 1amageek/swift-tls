@@ -7,7 +7,7 @@ import Foundation
 // MARK: - X.509 Errors
 
 /// Errors that can occur during X.509 operations
-public enum X509Error: Error, Sendable {
+package enum X509Error: Error, Sendable {
     // MARK: - Parsing Errors
 
     /// Invalid certificate structure

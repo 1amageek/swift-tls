@@ -9,7 +9,7 @@ import Foundation
 import TLSWireCore
 
 /// Validates Raw Public Key certificate payloads against configured trust.
-public enum RawPublicKeyValidator {
+package enum RawPublicKeyValidator {
 
     /// Parses and validates a peer's raw public key certificate entry.
     ///
@@ -19,7 +19,7 @@ public enum RawPublicKeyValidator {
     /// - Returns: The parsed SubjectPublicKeyInfo
     /// - Throws: `TLSHandshakeError.certificateVerificationFailed` when the
     ///   payload is malformed or, with `verifyPeer` enabled, not trusted
-    public static func validate(
+    package static func validate(
         certificate: Certificate,
         configuration: TLSConfiguration
     ) throws -> SubjectPublicKeyInfo {

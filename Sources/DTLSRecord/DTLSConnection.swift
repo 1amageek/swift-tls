@@ -62,7 +62,7 @@ public enum DTLSRecordAnomaly: Sendable, Equatable {
 }
 
 /// Output from processing a received datagram
-public struct DTLSConnectionOutput: Sendable {
+package struct DTLSConnectionOutput: Sendable {
     /// Encoded DTLS datagrams to send to the peer
     public let datagramsToSend: [Data]
 
@@ -106,7 +106,7 @@ public struct DTLSConnectionOutput: Sendable {
 // MARK: - Error Type
 
 /// Errors from DTLSConnection operations
-public enum DTLSConnectionError: Error, Sendable {
+package enum DTLSConnectionError: Error, Sendable {
     case handshakeNotStarted
     case handshakeNotComplete
     case handshakeAlreadyStarted
@@ -134,7 +134,7 @@ extension DTLSConnectionError: CustomStringConvertible {
 // MARK: - DTLSConnection
 
 /// A DTLS 1.2 connection managing handshake and record-layer encryption
-public final class DTLSConnection: Sendable {
+package final class DTLSConnection: Sendable {
     private let certificate: DTLSCertificate
     private let supportedCipherSuites: [DTLSCipherSuite]
     private let requireClientCertificate: Bool

@@ -12,7 +12,7 @@ import SwiftASN1
 /// A DTLS certificate with its private key and fingerprint
 public struct DTLSCertificate: Sendable {
     /// The X.509 certificate (from TLSCore)
-    public let x509: X509Certificate
+    package let x509: X509Certificate
 
     /// The ECDSA P-256 private key
     public let privateKey: P256.Signing.PrivateKey

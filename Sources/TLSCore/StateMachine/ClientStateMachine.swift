@@ -22,7 +22,7 @@ import TLSHandshakeCore
 /// from EncryptedExtensions onward the FSM core owns the transcript, key schedule,
 /// CertificateVerify proof-of-possession check, Finished MAC, and secret
 /// derivation.
-public final class ClientStateMachine: Sendable {
+package final class ClientStateMachine: Sendable {
 
     private let state = Mutex<ClientState>(ClientState())
 

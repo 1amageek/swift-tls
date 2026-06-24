@@ -43,7 +43,7 @@ extension X509CertificateBase.PublicKey {
 
 extension VerificationKey {
     /// Creates a VerificationKey from an X.509 certificate
-    public init(certificate: X509Certificate) throws {
+    package init(certificate: X509Certificate) throws {
         guard let key = try certificate.extractPublicKey() as? VerificationKey else {
             throw X509Error.unsupportedPublicKeyAlgorithm("Cannot convert to VerificationKey")
         }
@@ -60,7 +60,7 @@ extension VerificationKey {
     }
 
     /// Creates a VerificationKey from a Certificate.PublicKey
-    public init(publicKey: X509CertificateBase.PublicKey) throws {
+    package init(publicKey: X509CertificateBase.PublicKey) throws {
         guard let key = try publicKey.toVerificationKey() as? VerificationKey else {
             throw X509Error.unsupportedPublicKeyAlgorithm("Cannot convert to VerificationKey")
         }

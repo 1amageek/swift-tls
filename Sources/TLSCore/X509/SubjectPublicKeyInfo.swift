@@ -22,7 +22,7 @@ import SwiftASN1
 
 /// A parsed SubjectPublicKeyInfo with both the verification key and the
 /// exact DER bytes (used for byte-level trust comparison in RFC 7250).
-public struct SubjectPublicKeyInfo: Sendable {
+package struct SubjectPublicKeyInfo: Sendable {
 
     /// The verification key parsed from the structure
     public let verificationKey: VerificationKey

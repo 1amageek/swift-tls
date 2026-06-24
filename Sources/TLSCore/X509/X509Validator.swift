@@ -10,7 +10,7 @@ import SwiftASN1
 // MARK: - Validation Options
 
 /// Options for X.509 certificate validation
-public struct X509ValidationOptions: Sendable {
+package struct X509ValidationOptions: Sendable {
     /// Whether to check certificate validity periods
     public var checkValidity: Bool
 
@@ -111,7 +111,7 @@ public enum RequiredEKU: Sendable {
 // MARK: - X.509 Validator
 
 /// Validates X.509 certificate chains
-public struct X509Validator: Sendable {
+package struct X509Validator: Sendable {
     /// Trusted root CA certificates
     private let trustedRoots: [X509Certificate]
 
@@ -747,7 +747,7 @@ public struct X509Validator: Sendable {
 // MARK: - Certificate Store
 
 /// A store for trusted CA certificates
-public struct CertificateStore: Sendable {
+package struct CertificateStore: Sendable {
     private var certificates: [X509Certificate]
 
     public init() {

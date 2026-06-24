@@ -19,7 +19,7 @@ import TLSRecordCore
 // MARK: - TLS Connection Output
 
 /// Output from processing received TCP data
-public struct TLSConnectionOutput: Sendable {
+package struct TLSConnectionOutput: Sendable {
     /// Data to send back over TCP (handshake messages, encrypted responses)
     public let dataToSend: Data
 
@@ -69,7 +69,7 @@ public struct TLSConnectionOutput: Sendable {
 /// - `readLock`: serializes all receive operations + buffer management
 ///
 /// Lock ordering (deadlock prevention): readLock → writeLock → sharedState
-public final class TLSConnection: Sendable {
+package final class TLSConnection: Sendable {
 
     private let handler: TLS13Handler
     private let sharedState: Mutex<SharedState>

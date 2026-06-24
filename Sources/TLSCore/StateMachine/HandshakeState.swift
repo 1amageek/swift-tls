@@ -127,7 +127,7 @@ public struct HandshakeContext: Sendable {
     public var peerCertificates: [Data]?
 
     /// Parsed peer leaf certificate (for signature verification)
-    public var peerCertificate: X509Certificate?
+    package var peerCertificate: X509Certificate?
 
     /// Peer's public key extracted from certificate
     public var peerVerificationKey: (any TLSVerificationKey)?
@@ -206,7 +206,7 @@ public struct HandshakeContext: Sendable {
     /// Parsed client leaf certificate (server-side).
     ///
     /// Used for signature verification in CertificateVerify.
-    public var clientCertificate: X509Certificate?
+    package var clientCertificate: X509Certificate?
 
     /// Client's public key extracted from certificate (server-side).
     ///

@@ -169,7 +169,7 @@ public struct TLSConfiguration: Sendable {
     public var trustedCACertificates: [Data]?
 
     /// Parsed trusted root certificates for chain validation
-    public var trustedRootCertificates: [X509Certificate]?
+    package var trustedRootCertificates: [X509Certificate]?
 
     /// Expected peer public key for verification.
     /// The format depends on the key type (x963 for ECDSA, raw for Ed25519).
