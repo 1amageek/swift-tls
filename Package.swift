@@ -128,6 +128,29 @@ let package = Package(
             path: "Sources/DTLSRecordCore",
             swiftSettings: coreSettings
         ),
+        // ---- Embedded-clean TLS/DTLS sans-IO connection engine (dual-build) ----
+        // The cored orchestrator: drives the handshake FSMs (TLSClientHandshake /
+        // TLSClientAuthMachine / TLSServerHandshake / DTLS*) through the record
+        // protector, sans-IO, caller-locked, generic over `C: CryptoProvider`.
+        // X.509 trust + CertificateVerify signing are INJECTED as closures in
+        // `TLSEngineConfiguration<C>` (the facade host strategy fills them).
+        // Embedded-clean: no Foundation/`any`/`Mutex`/`ContinuousClock`/X509.
+        .target(
+            name: "TLSEngineCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                "TLSWireCore",
+                "TLSCryptoCore",
+                "TLSHandshakeCore",
+                "TLSRecordCore",
+                "DTLSWireCore",
+                "DTLSHandshakeCore",
+                "DTLSRecordCore",
+            ],
+            path: "Sources/TLSEngineCore",
+            swiftSettings: coreSettings
+        ),
         // ---- Host engine: TLS 1.3 handshake + crypto/X509 (package-visible) ----
         .target(
             name: "TLSCore",
