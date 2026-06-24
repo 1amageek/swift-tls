@@ -3,7 +3,7 @@
 ///
 /// Asserts that the Embedded-clean `TLSCryptoCore.TLSKeyExchange<C>` and
 /// `TLSCryptoCore.TLSSignature{Signer,Verifier}<C>` specialised at
-/// `C = TLSProvider` produce results byte-for-byte / behaviour-identical
+/// `C = TLSCryptoProvider` produce results byte-for-byte / behaviour-identical
 /// to the legacy direct-swift-crypto paths (`KeyExchange`, `TLSSignature` /
 /// `SigningKey` / `VerificationKey`):
 ///
@@ -31,7 +31,7 @@ import TLSCryptoCore
 @Suite("TLS Key Exchange + Signature Seam Differential Tests")
 struct TLSKeyExchangeSignatureSeamDifferentialTests {
 
-    private typealias Provider = TLSProvider
+    private typealias Provider = TLSCryptoProvider
 
     // MARK: - (EC)DHE shared-secret equality (legacy path == seam path)
 

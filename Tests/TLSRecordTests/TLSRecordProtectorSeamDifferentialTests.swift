@@ -1,7 +1,7 @@
 /// Byte-level differential tests for the seam-routed TLS 1.3 record AEAD.
 ///
 /// Asserts that the Embedded-clean `TLSRecordCore.TLSRecordProtector<C, A>`
-/// specialised at `C = TLSProvider`, `A = TLSRecordAEAD` produces
+/// specialised at `C = TLSCryptoProvider`, `A = TLSRecordAEAD` produces
 /// byte-for-byte the same ciphertext as the adapter `TLSRecordCryptor` (the
 /// public path the existing suite exercises), and that a tampered tag is rejected
 /// with `badRecordMac` (never accepted, never a garbage plaintext — RFC 8446 §5.2,
@@ -23,7 +23,7 @@ import TLSRecordCore
 @Suite("TLS Record Protector Seam Differential Tests")
 struct TLSRecordProtectorSeamDifferentialTests {
 
-    private typealias CoreProtector = TLSRecordProtector<TLSProvider, TLSRecordAEAD>
+    private typealias CoreProtector = TLSRecordProtector<TLSCryptoProvider, TLSRecordAEAD>
 
     private func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02x", $0) }.joined()

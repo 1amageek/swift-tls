@@ -29,7 +29,7 @@
 /// tests match the exact case).
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSCryptoProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no ContinuousClock, no swift-crypto, no X509/ASN.1, typed throws.
 
 import P2PCoreBytes

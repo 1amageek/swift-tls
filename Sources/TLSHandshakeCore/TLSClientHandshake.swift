@@ -42,7 +42,7 @@
 /// post-ServerHello authentication slice continues with a single transcript owner.
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSCryptoProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no ContinuousClock, no swift-crypto, no X509/ASN.1, typed throws, no key paths.
 
 import P2PCoreBytes

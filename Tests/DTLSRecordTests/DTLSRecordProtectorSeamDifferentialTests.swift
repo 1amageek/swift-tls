@@ -1,7 +1,7 @@
 /// Byte-level differential tests for the seam-routed DTLS 1.2 record AEAD.
 ///
 /// Asserts that the Embedded-clean `DTLSRecordCore.DTLSRecordProtector<C, A>`
-/// specialised at `C = TLSProvider`, `A = DTLSRecordAEAD` produces
+/// specialised at `C = TLSCryptoProvider`, `A = DTLSRecordAEAD` produces
 /// byte-for-byte the same output as the adapter `DTLSRecordCryptor` (the public
 /// path the existing suite exercises), and that a tampered tag is rejected
 /// (never accepted, never a garbage plaintext — RFC 6347 §4.1.2.7).
@@ -19,7 +19,7 @@ import DTLSRecordCore
 @Suite("DTLS Record Protector Seam Differential Tests")
 struct DTLSRecordProtectorSeamDifferentialTests {
 
-    private typealias CoreProtector = DTLSRecordProtector<TLSProvider, DTLSRecordAEAD>
+    private typealias CoreProtector = DTLSRecordProtector<TLSCryptoProvider, DTLSRecordAEAD>
 
     private func hex(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02x", $0) }.joined()

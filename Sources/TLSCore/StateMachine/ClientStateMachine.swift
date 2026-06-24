@@ -36,11 +36,11 @@ public final class ClientStateMachine: Sendable {
         /// PSK binder, HelloRetryRequest, downgrade-sentinel detection, (EC)DHE +
         /// handshake-secret derivation). Handed off to `authMachine` after
         /// ServerHello via `makeAuthMachine`.
-        var preMachine: TLSClientHandshake<TLSProvider>?
+        var preMachine: TLSClientHandshake<TLSCryptoProvider>?
 
         /// The Embedded-clean authentication FSM, constructed at the end of
         /// ServerHello processing and driven from EncryptedExtensions onward.
-        var authMachine: TLSClientAuthMachine<TLSProvider>?
+        var authMachine: TLSClientAuthMachine<TLSCryptoProvider>?
     }
 
     /// Signature schemes the client advertises. This list is the single source of
@@ -168,7 +168,7 @@ public final class ClientStateMachine: Sendable {
 
             // PSK-related extensions (if we have a session ticket)
             var offeredPsks: OfferedPsks?
-            var pskBinder: TLSClientHandshake<TLSProvider>.PSKBinderInput?
+            var pskBinder: TLSClientHandshake<TLSCryptoProvider>.PSKBinderInput?
 
             // The main transcript suite. Kept at the default (SHA-256) to match the
             // legacy adapter's default `TranscriptHash()`; the PSK binder uses its
@@ -202,7 +202,7 @@ public final class ClientStateMachine: Sendable {
                     identities: [pskIdentity],
                     binders: [Data(repeating: 0, count: ticket.cipherSuite.hashLength)] // Placeholder
                 )
-                pskBinder = TLSClientHandshake<TLSProvider>.PSKBinderInput(
+                pskBinder = TLSClientHandshake<TLSCryptoProvider>.PSKBinderInput(
                     psk: Self.secretBytes(ticket.resumptionPSK),
                     isResumption: true,
                     binderCipherSuite: ticket.cipherSuite
@@ -216,7 +216,7 @@ public final class ClientStateMachine: Sendable {
             // Drive the Embedded-clean pre-ServerHello core: it owns the transcript
             // + key schedule, computes the PSK binder (two-pass, byte-identical),
             // folds ClientHello into the transcript, and derives the 0-RTT secret.
-            var preMachine = TLSClientHandshake<TLSProvider>(
+            var preMachine = TLSClientHandshake<TLSCryptoProvider>(
                 cipherSuite: preCipherSuite,
                 pskOffered: offeredPsks != nil
             )
@@ -503,7 +503,7 @@ public final class ClientStateMachine: Sendable {
     /// Generate ClientHello2 after HelloRetryRequest
     private func generateClientHello2(
         state: inout ClientState,
-        preMachine: inout TLSClientHandshake<TLSProvider>,
+        preMachine: inout TLSClientHandshake<TLSCryptoProvider>,
         keyExchange: KeyExchange
     ) throws -> Data {
         // Build extensions (similar to startHandshake but with new key_share)
@@ -554,7 +554,7 @@ public final class ClientStateMachine: Sendable {
         // PSK extension (must be last if present)
         // If we were doing PSK resumption before HRR, re-add PSK with updated binder
         var offeredPsks: OfferedPsks?
-        var pskBinder: TLSClientHandshake<TLSProvider>.PSKBinderInput?
+        var pskBinder: TLSClientHandshake<TLSCryptoProvider>.PSKBinderInput?
 
         if let ticket = state.context.sessionTicket, ticket.isValid(), state.context.pskUsed || preMachine.pskWasOffered {
             // psk_key_exchange_modes (required when offering PSKs)
@@ -566,7 +566,7 @@ public final class ClientStateMachine: Sendable {
                 identities: [pskIdentity],
                 binders: [Data(repeating: 0, count: ticket.cipherSuite.hashLength)] // Placeholder
             )
-            pskBinder = TLSClientHandshake<TLSProvider>.PSKBinderInput(
+            pskBinder = TLSClientHandshake<TLSCryptoProvider>.PSKBinderInput(
                 psk: Self.secretBytes(ticket.resumptionPSK),
                 isResumption: true,
                 binderCipherSuite: ticket.cipherSuite
@@ -992,7 +992,7 @@ public final class ClientStateMachine: Sendable {
     /// CertificateVerify follows only when a signing key and a non-empty payload
     /// are present.
     private func buildClientCertificateFlight(
-        authMachine: inout TLSClientAuthMachine<TLSProvider>,
+        authMachine: inout TLSClientAuthMachine<TLSCryptoProvider>,
         state: inout ClientState
     ) throws {
         // Determine the certificate payload from the negotiated type.

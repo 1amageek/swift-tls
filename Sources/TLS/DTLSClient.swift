@@ -1,6 +1,6 @@
 /// Tier-1 DTLS 1.2 client over UDP datagrams.
 ///
-/// Non-generic facade fixed to `TLSProvider`. Wraps the package `DTLSConnection`
+/// Non-generic facade fixed to `TLSCryptoProvider`. Wraps the package `DTLSConnection`
 /// engine and presents a `[UInt8]`/`Span<UInt8>` surface with one `TLSError`. The
 /// datagram methods return `[[UInt8]]` (a list of datagrams to send), matching
 /// DTLS's record-per-datagram model.

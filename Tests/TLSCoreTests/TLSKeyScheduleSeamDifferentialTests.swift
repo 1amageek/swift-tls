@@ -1,7 +1,7 @@
 /// Differential tests for the seam-routed TLS 1.3 key schedule.
 ///
 /// Asserts that the Embedded-clean `TLSCryptoCore.TLSKeySchedule<C>` specialised
-/// at `C = TLSProvider` produces byte-for-byte the RFC 8448 Section 3
+/// at `C = TLSCryptoProvider` produces byte-for-byte the RFC 8448 Section 3
 /// vectors directly through the `CryptoProvider`/`KeyDerivation`/`HashFunction`
 /// seam — independently of the Foundation adapter — and that the adapter
 /// `TLSKeySchedule` (which delegates to the same core) agrees with the core path.
@@ -61,7 +61,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
 
     @Test("Core early secret equals RFC 8448 Section 3 (seam path)")
     func coreEarlySecretMatchesRFC() throws {
-        var ks = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var ks = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         ks.deriveEarlySecret(psk: nil)
         let earlySecret = try ks.currentEarlySecret()
         #expect(hex(earlySecret) == earlySecretHex)
@@ -72,7 +72,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let shared = try reconstructedSharedSecret()
         #expect(hex(shared) == sharedSecretHex)
 
-        var ks = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var ks = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         ks.deriveEarlySecret(psk: nil)
         let transcriptHash = bytesFromHex(chShTranscriptHashHex)
 
@@ -92,7 +92,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let transcriptHash = bytesFromHex(chShTranscriptHashHex)
 
         // Generic core path
-        var core = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var core = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         core.deriveEarlySecret(psk: nil)
         let (coreClient, coreServer) = try core.deriveHandshakeSecrets(
             sharedSecret: shared, transcriptHash: transcriptHash)
@@ -114,7 +114,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let hsHash = bytesFromHex(chShTranscriptHashHex)
         let appHash = [UInt8](SHA256.hash(data: Data("CH||SH||EE||CT||CV||SF".utf8)))
 
-        var core = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var core = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         core.deriveEarlySecret(psk: nil)
         _ = try core.deriveHandshakeSecrets(sharedSecret: shared, transcriptHash: hsHash)
         let (coreAppC, coreAppS) = try core.deriveApplicationSecrets(transcriptHash: appHash)
@@ -135,7 +135,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let baseKey256 = [UInt8](repeating: 0x55, count: 32)
         let transcript256 = [UInt8](SHA256.hash(data: Data("handshake messages".utf8)))
 
-        let core256 = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        let core256 = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         let coreKey256 = try core256.finishedKey(from: baseKey256)
         let coreVerify256 = core256.finishedVerifyData(forKey: coreKey256, transcriptHash: transcript256)
 
@@ -151,7 +151,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let baseKey384 = [UInt8](repeating: 0x66, count: 48)
         let transcript384 = [UInt8](SHA384.hash(data: Data("handshake messages".utf8)))
 
-        let core384 = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_256_gcm_sha384)
+        let core384 = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_256_gcm_sha384)
         let coreKey384 = try core384.finishedKey(from: baseKey384)
         let coreVerify384 = core384.finishedVerifyData(forKey: coreKey384, transcriptHash: transcript384)
 
@@ -172,7 +172,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let coreKeys = try TLSTrafficKeys.derive(
             secret: secret.span,
             cipherSuite: .tls_aes_128_gcm_sha256,
-            provider: TLSProvider.self)
+            provider: TLSCryptoProvider.self)
 
         let adapterKeys = TrafficKeys(
             secret: SymmetricKey(data: Data(secret)),
@@ -189,7 +189,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let m1 = [UInt8]([0x01, 0x00, 0x00, 0x04, 0xAA, 0xBB, 0xCC, 0xDD])
         let m2 = [UInt8]([0x02, 0x00, 0x00, 0x02, 0x11, 0x22])
 
-        var core = TLSCryptoCore.TLSTranscriptHash<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var core = TLSCryptoCore.TLSTranscriptHash<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         core.update(with: m1.span)
         core.update(with: m2.span)
         let coreHash = core.currentHash()
@@ -207,7 +207,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
 
     @Test("Empty transcript hash via core equals SHA-256 of empty string")
     func emptyTranscriptHashMatches() {
-        let core = TLSCryptoCore.TLSTranscriptHash<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        let core = TLSCryptoCore.TLSTranscriptHash<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         let hashValue = core.currentHash()
         #expect(hex(hashValue) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     }
@@ -218,7 +218,7 @@ struct TLSKeyScheduleSeamDifferentialTests {
         let hsHash = [UInt8](repeating: 0xAA, count: 32)
         let appHash = [UInt8](repeating: 0xBB, count: 32)
 
-        var core = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
+        var core = TLSCryptoCore.TLSKeySchedule<TLSCryptoProvider>(cipherSuite: .tls_aes_128_gcm_sha256)
         core.deriveEarlySecret(psk: nil)
         _ = try core.deriveHandshakeSecrets(sharedSecret: shared, transcriptHash: hsHash)
         _ = try core.deriveApplicationSecrets(transcriptHash: appHash)

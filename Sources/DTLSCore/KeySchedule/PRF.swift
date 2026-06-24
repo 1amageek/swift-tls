@@ -2,7 +2,7 @@
 ///
 /// Restores the historical `Data`-based `PRF.compute` / `PRF.computeSHA384` surface
 /// (used by the existing test suite) and delegates to
-/// ``DTLSHandshakeCore/DTLSPRF`` specialised at `C = TLSProvider`, so the
+/// ``DTLSHandshakeCore/DTLSPRF`` specialised at `C = TLSCryptoProvider`, so the
 /// output is byte-identical to the pre-extraction swift-crypto implementation.
 ///
 /// RFC 5246 Section 5:
@@ -23,7 +23,7 @@ public enum PRF: Sendable {
         seed: Data,
         length: Int
     ) -> Data {
-        Data(DTLSPRF<TLSProvider>.compute(
+        Data(DTLSPRF<TLSCryptoProvider>.compute(
             secret: [UInt8](secret),
             label: label,
             seed: [UInt8](seed),
@@ -39,7 +39,7 @@ public enum PRF: Sendable {
         seed: Data,
         length: Int
     ) -> Data {
-        Data(DTLSPRF<TLSProvider>.compute(
+        Data(DTLSPRF<TLSCryptoProvider>.compute(
             secret: [UInt8](secret),
             label: label,
             seed: [UInt8](seed),

@@ -28,19 +28,24 @@ let package = Package(
         .library(name: "DTLSWire", targets: ["DTLSWireCore"]),
     ],
     dependencies: [
-        // NOTE on the crypto provider:
-        // The Embedded-first design wanted swift-tls to specialise its cores at
-        // `P2PCrypto.DefaultCryptoProvider`. That is NOT possible while swift-tls
-        // depends on swift-certificates: swift-p2p-crypto's `P2PCrypto` pulls a
-        // VENDORED swift-crypto floored at .macOS(.v26), and a path dependency wins
-        // SPM identity resolution over the remote `apple/swift-crypto`. The
-        // vendored v26 `Crypto` product then cannot satisfy swift-certificates
-        // (whose targets support .macOS(.v12)) — SPM rejects it. swift-tls
-        // therefore keeps the remote `apple/swift-crypto` (low floor) and builds
-        // its single unified `TLSProvider` over it. The duplicate standalone
-        // provider `TLSFoundationProvider` is still deleted (one provider now).
+        // Crypto-provider unification (embedded-first-api.md §2.2): swift-tls
+        // specialises its generic cores at the stack-wide shared provider via the
+        // local `TLSCryptoProvider` composite — `P2PCrypto.DefaultCryptoProvider`
+        // for every primitive EXCEPT the two ECDSA signature schemes, which use the
+        // DER encoding TLS 1.3 CertificateVerify requires (RFC 8446 §4.2.3). This is
+        // UNIFORM with swift-quic's `QUICCryptoProvider`.
+        //
+        // This is now possible because swift-p2p-crypto's host `FoundationCryptoProvider`
+        // sources `Crypto` from the SAME `apple/swift-crypto` identity that
+        // swift-certificates uses (range `3.12.3..<5.0.0`), with the vendored BoringSSL
+        // given a DISTINCT identity (`p2p-boringssl`). There is therefore one coherent
+        // `swift-crypto` in the graph and no `.macOS(.v26)` floor is forced onto
+        // swift-certificates — the stale rejection that previously blocked this is gone.
+        // The swift-crypto range below mirrors swift-p2p-crypto/swift-quic so the whole
+        // graph agrees on one version.
         .package(path: "../swift-p2p-core"),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
+        .package(path: "../swift-p2p-crypto"),
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.12.3"..<"5.0.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
     ],
@@ -132,6 +137,11 @@ let package = Package(
                 "TLSHandshakeCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                // Unified provider: the host adapter specialises every generic
+                // engine at the local `TLSCryptoProvider` composite (= shared
+                // `DefaultCryptoProvider` + DER-ECDSA override), replacing the
+                // deleted standalone `TLSProvider` aggregate.
+                .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),

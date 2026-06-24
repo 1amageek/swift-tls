@@ -22,7 +22,7 @@
 /// byte-for-byte the same key material as before the refactor.
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSCryptoProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no swift-crypto, typed throws.
 
 import P2PCoreBytes

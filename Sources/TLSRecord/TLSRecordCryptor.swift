@@ -14,7 +14,7 @@
 /// value type, generic over the `CryptoProvider.AEAD` seam. This adapter:
 /// - holds the `Mutex`-backed sequence-number + protector state (the protector is
 ///   a value type; the `Mutex` and sequence numbers stay caller-side here),
-/// - specialises the core at `C = TLSProvider`, `A = TLSRecordAEAD`
+/// - specialises the core at `C = TLSCryptoProvider`, `A = TLSRecordAEAD`
 ///   (swift-crypto–backed, byte-identical to the legacy direct-Crypto path),
 /// - bridges `Data` ↔ `[UInt8]` at the boundary,
 /// - preserves the exact public API and decrypt-failure behavior.
@@ -146,9 +146,9 @@ public final class TLSRecordCryptor: Sendable {
     // MARK: - Private Helpers
 
     /// The concrete record protector type the host adapter specialises:
-    /// the Embedded-clean generic core at `C = TLSProvider`,
+    /// the Embedded-clean generic core at `C = TLSCryptoProvider`,
     /// `A = TLSRecordAEAD` (swift-crypto–backed).
-    private typealias Protector = TLSRecordProtector<TLSProvider, TLSRecordAEAD>
+    private typealias Protector = TLSRecordProtector<TLSCryptoProvider, TLSRecordAEAD>
 
     private struct CryptorState: Sendable {
         /// The send (write) protector (value type). The sequence number stays here

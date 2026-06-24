@@ -1,7 +1,7 @@
 /// Tier-1 TLS 1.3 client over a reliable byte stream (TCP).
 ///
 /// The non-generic facade fixed to `DefaultCryptoProvider`. It wraps the package
-/// record engine (`TLSConnection`, specialised at the unified `TLSProvider`) and
+/// record engine (`TLSConnection`, specialised at the unified `TLSCryptoProvider`) and
 /// presents a `[UInt8]`/`Span<UInt8>` surface with a single `TLSError`.
 ///
 /// The methods are `async` because the underlying handshake engine is `async`;

@@ -162,9 +162,9 @@ public enum SigningKey: TLSSigningKey, Sendable {
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
             return Data(try TLSDERP384Signature.sign(message.span, with: signing))
         case .ed25519(let key):
-            let signing = try TLSEd25519.signingKey(
+            let signing = try TLSCryptoProvider.Ed25519.signingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return Data(try TLSEd25519.sign(message.span, with: signing))
+            return Data(try TLSCryptoProvider.Ed25519.sign(message.span, with: signing))
         }
     }
 
@@ -271,9 +271,9 @@ public enum VerificationKey: TLSVerificationKey, Sendable {
             return TLSDERP384Signature.isValid(
                 signature: sig.span, for: message.span, with: verifying)
         case .ed25519(let key):
-            let verifying = try TLSEd25519.verifyingKey(
+            let verifying = try TLSCryptoProvider.Ed25519.verifyingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return TLSEd25519.isValid(
+            return TLSCryptoProvider.Ed25519.isValid(
                 signature: sig.span, for: message.span, with: verifying)
         }
     }

@@ -17,7 +17,7 @@
 /// ``DTLSWireCore/DTLSError`` (no silent fallback).
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSCryptoProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no swift-crypto, typed throws.
 
 import P2PCoreBytes

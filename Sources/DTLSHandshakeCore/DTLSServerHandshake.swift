@@ -31,7 +31,7 @@
 ///   the transcript.
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSCryptoProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no ContinuousClock, no swift-crypto, no X.509, typed throws, no key paths.
 
 import P2PCoreBytes

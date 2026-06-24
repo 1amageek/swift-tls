@@ -42,7 +42,7 @@ public enum DTLSClientState: Sendable, Equatable {
     case failed(String)
 
     /// Bridge from the Embedded-clean FSM state.
-    init(core: DTLSClientHandshake<TLSProvider>.ClientState) {
+    init(core: DTLSClientHandshake<TLSCryptoProvider>.ClientState) {
         switch core {
         case .idle: self = .idle
         case .waitingServerHello: self = .waitingServerHello
