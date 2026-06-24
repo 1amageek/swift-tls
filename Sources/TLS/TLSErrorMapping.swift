@@ -10,11 +10,38 @@ import TLSCore
 import TLSRecord
 import TLSWireCore
 import TLSRecordCore
+import TLSEngineCore
 
 extension TLSError {
+    /// Folds the cored engine's typed error onto the facade `TLSError`, preserving
+    /// the failure category (verification failures stay verification failures —
+    /// never collapsed to a generic protocol error or, worse, success).
+    static func fromEngine(_ e: TLSEngineCore.TLSEngineError) -> TLSError {
+        switch e {
+        case .handshakeNotComplete:
+            return .handshakeNotComplete
+        case .connectionClosed:
+            return .connectionClosed
+        case .protocolFailure(let reason):
+            return .protocolFailure(reason: reason)
+        case .fatalAlert(let code, let reason):
+            return .fatalAlert(code: code, reason: reason)
+        case .verificationFailed(let reason):
+            return .verificationFailed(reason: reason)
+        case .invalidConfiguration(let reason):
+            return .invalidConfiguration(reason: reason)
+        case .bufferOverflow:
+            return .bufferOverflow
+        case .internalError(let reason):
+            return .internalError(reason: reason)
+        }
+    }
+
     /// Folds any engine error thrown by the TLS byte-stream engine into `TLSError`.
     static func from(_ error: any Error) -> TLSError {
         switch error {
+        case let e as TLSEngineCore.TLSEngineError:
+            return fromEngine(e)
         case let e as TLSConnectionError:
             return from(e)
         case let e as TLSHandshakeError:

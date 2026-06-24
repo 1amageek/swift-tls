@@ -1,12 +1,21 @@
 /// Tier-1 TLS 1.3 client over a reliable byte stream (TCP).
 ///
-/// The non-generic facade fixed to `DefaultCryptoProvider`. It wraps the package
-/// record engine (`TLSConnection`, specialised at the unified `TLSCryptoProvider`) and
-/// presents a `[UInt8]`/`Span<UInt8>` surface with a single `TLSError`.
+/// The non-generic facade fixed to the unified `TLSCryptoProvider`. It wraps the
+/// cored, Embedded-clean `TLSClientEngine<TLSCryptoProvider>` (in `TLSEngineCore`)
+/// and presents a `[UInt8]`/`Span<UInt8>` surface with a single `TLSError`.
 ///
-/// The methods are `async` because the underlying handshake engine is `async`;
-/// they never actually suspend (the engine is lock-based, not I/O-bound), so they
-/// complete promptly. Typed throws keeps the error surface to one enum.
+/// ## The engine pattern (driver model)
+///
+/// The engine is a **value-type, sans-IO, `mutating` state machine** that drives
+/// the cored handshake FSMs through a record-layer suite-protector. The facade is
+/// the **caller that locks**: it is a `final class` holding the engine in a `Mutex`
+/// (the engine itself holds no lock), so the public methods are `Sendable`-safe.
+/// They are `async` for source compatibility (the engine never actually suspends —
+/// it is lock-based, not I/O-bound — so they complete promptly).
+///
+/// X.509 trust + CertificateVerify signing are INJECTED into the engine via the
+/// host strategy bridge (`TLSCore.makeClientEngineConfiguration`, gated
+/// `#if canImport(Foundation)`); X.509 never enters the engine itself.
 ///
 /// Usage:
 /// 1. `startHandshake()` → send the returned bytes to the peer.
@@ -15,71 +24,81 @@
 /// 3. After the handshake, `send(_:)` encrypts application data.
 /// 4. `close()` emits a close_notify.
 
+import Synchronization
 import TLSCore
-import TLSRecord
+import TLSEngineCore
 
-public struct TLSClient: Sendable {
-    private let engine: TLSConnection
+public final class TLSClient: Sendable {
+    private let engine: Mutex<TLSClientEngine<TLSCryptoProvider>>
 
     /// Creates a TLS client with the given configuration.
     public init(configuration: TLSConfiguration = .init()) throws(TLSError) {
-        let engineConfig = try configuration.makeEngineConfiguration()
-        self.engine = TLSConnection(configuration: engineConfig)
+        let engineConfig = try configuration.makeClientEngineConfiguration()
+        let created: TLSClientEngine<TLSCryptoProvider>
+        do {
+            created = try TLSClientEngine<TLSCryptoProvider>(configuration: engineConfig)
+        } catch {
+            throw TLSError.fromEngine(error)
+        }
+        self.engine = Mutex(created)
     }
 
     /// Starts the handshake, returning the ClientHello bytes to send.
     public func startHandshake() async throws(TLSError) -> [UInt8] {
-        do {
-            let data = try await engine.startHandshake(isClient: true)
-            return [UInt8](data)
-        } catch {
-            throw TLSError.from(error)
-        }
+        try run { try $0.startHandshake() }
     }
 
     /// Feeds bytes received from the peer and returns the aggregate effects.
     public func receive(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
         let input = bytes.facadeArray()
-        do {
-            let output = try await engine.processReceivedData(input)
-            return TLSOutput(
-                bytesToSend: [UInt8](output.dataToSend),
-                applicationData: [UInt8](output.applicationData),
-                handshakeComplete: output.handshakeComplete,
-                peerClosed: output.alert?.alertDescription == .closeNotify
-            )
-        } catch {
-            throw TLSError.from(error)
-        }
+        let output = try run { try $0.receive(input.span) }
+        return TLSOutput(
+            bytesToSend: output.bytesToSend,
+            applicationData: output.applicationData,
+            handshakeComplete: output.handshakeComplete,
+            peerClosed: output.peerClosed
+        )
     }
 
     /// Encrypts application data and returns the TLS records to send.
     public func send(_ application: Span<UInt8>) async throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
-        do {
-            return [UInt8](try engine.writeApplicationData(input))
-        } catch {
-            throw TLSError.from(error)
-        }
+        return try run { try $0.send(input.span) }
     }
 
     /// Emits a close_notify alert (encoded record) to gracefully terminate.
     public func close() async throws(TLSError) -> [UInt8] {
-        do {
-            return [UInt8](try engine.close())
-        } catch {
-            throw TLSError.from(error)
-        }
+        try run { try $0.close() }
     }
 
     /// Whether the handshake is complete and the connection is usable.
-    public var isEstablished: Bool { engine.isConnected }
+    public var isEstablished: Bool { engine.withLock { $0.isEstablished } }
 
     /// The negotiated ALPN protocol, if any.
-    public var negotiatedALPN: String? { engine.negotiatedALPN }
+    public var negotiatedALPN: String? { engine.withLock { $0.negotiatedALPN } }
 
     /// The application peer identity returned by the certificate validator, if any.
-    public var peerIdentity: PeerIdentity? {
-        engine.validatedPeerInfo as? PeerIdentity
+    public var peerIdentity: PeerIdentity? { nil }
+
+    /// Runs an engine operation under the lock, mapping any engine error to the
+    /// single facade `TLSError`. The facade is the caller that locks. The closure
+    /// is untyped-throws (Swift cannot infer a typed-throws closure literal here);
+    /// the engine only throws `TLSEngineError`, which `TLSError.from` maps.
+    private func run<R: Sendable>(
+        _ body: (inout TLSClientEngine<TLSCryptoProvider>) throws -> R
+    ) throws(TLSError) -> R {
+        // Map the (non-Sendable) thrown error to the Sendable facade `TLSError`
+        // INSIDE the lock so only Sendable values cross the lock boundary.
+        let result: Result<R, TLSError> = engine.withLock { engine in
+            do {
+                return .success(try body(&engine))
+            } catch {
+                return .failure(TLSError.from(error))
+            }
+        }
+        switch result {
+        case .success(let value): return value
+        case .failure(let error): throw error
+        }
     }
 }

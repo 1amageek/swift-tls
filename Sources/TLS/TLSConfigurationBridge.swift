@@ -18,8 +18,19 @@
 import Foundation
 import TLSCore
 import TLSWireCore
+import TLSEngineCore
 
 extension TLSConfiguration {
+    /// Builds the cored CLIENT engine configuration (host X.509 + signing strategy).
+    func makeClientEngineConfiguration() throws(TLSError) -> TLSEngineConfiguration<TLSCryptoProvider> {
+        try makeEngineConfiguration().makeClientEngineConfiguration()
+    }
+
+    /// Builds the cored SERVER engine configuration (host X.509 + signing strategy).
+    func makeServerEngineConfiguration() throws(TLSError) -> TLSEngineConfiguration<TLSCryptoProvider> {
+        try makeEngineConfiguration().makeServerEngineConfiguration()
+    }
+
     /// Build the engine configuration. Throws `TLSError` for invalid material
     /// (e.g. a malformed signing key), never silently dropping it.
     func makeEngineConfiguration() throws(TLSError) -> TLSCore.TLSConfiguration {

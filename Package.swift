@@ -158,6 +158,10 @@ let package = Package(
                 "TLSWireCore",
                 "TLSCryptoCore",
                 "TLSHandshakeCore",
+                // The cored sans-IO engine the facade drives. TLSCore provides the
+                // HOST strategy bridge (X.509 trust + signing) that fills the
+                // engine's injected seams (`#if canImport(Foundation)`).
+                "TLSEngineCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
                 // Unified provider: the host adapter specialises every generic
@@ -211,9 +215,16 @@ let package = Package(
         .target(
             name: "TLS",
             dependencies: [
+                // The cored Embedded-clean engines the TLS (TCP) facade drives.
+                "TLSEngineCore",
+                // Host strategy bridge (X.509 trust + signing) lives in TLSCore,
+                // gated `#if canImport(Foundation)`.
+                "TLSCore",
+                // DTLS facade still wraps the host DTLSRecord engine pending the
+                // cored DTLS engine; TLSRecord is retained only for the legacy
+                // error mapping until the DTLS facade is also rewired.
                 "TLSRecord",
                 "DTLSRecord",
-                "TLSCore",
                 "DTLSCore",
             ],
             path: "Sources/TLS"
