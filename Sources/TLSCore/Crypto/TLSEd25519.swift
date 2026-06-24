@@ -1,4 +1,4 @@
-/// Ed25519 (EdDSA) for the `TLSFoundationProvider` signature seam.
+/// Ed25519 (EdDSA) for the `TLSProvider` signature seam.
 ///
 /// swift-crypto / CryptoKit backend, byte-identical to the legacy
 /// `SigningKey.ed25519` path for TLS 1.3 CertificateVerify:
@@ -18,7 +18,7 @@ import P2PCoreBytes
 import P2PCoreCrypto
 
 /// Ed25519 signatures for TLS. Conforms `P2PCoreCrypto.SignatureScheme`.
-public enum TLSFoundationEd25519: P2PCoreCrypto.SignatureScheme {
+public enum TLSEd25519: P2PCoreCrypto.SignatureScheme {
     public struct SigningKey: Sendable {
         let key: Curve25519.Signing.PrivateKey
     }
@@ -34,7 +34,7 @@ public enum TLSFoundationEd25519: P2PCoreCrypto.SignatureScheme {
     public static func signingKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> SigningKey {
         do {
             return SigningKey(key: try Curve25519.Signing.PrivateKey(
-                rawRepresentation: rawRepresentation.providerData()))
+                rawRepresentation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 32, actual: rawRepresentation.count)
         }
@@ -43,7 +43,7 @@ public enum TLSFoundationEd25519: P2PCoreCrypto.SignatureScheme {
     public static func verifyingKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> VerifyingKey {
         do {
             return VerifyingKey(key: try Curve25519.Signing.PublicKey(
-                rawRepresentation: rawRepresentation.providerData()))
+                rawRepresentation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 32, actual: rawRepresentation.count)
         }
@@ -63,7 +63,7 @@ public enum TLSFoundationEd25519: P2PCoreCrypto.SignatureScheme {
 
     public static func sign(_ message: Span<UInt8>, with signingKey: SigningKey) throws(P2PCoreCrypto.CryptoError) -> [UInt8] {
         do {
-            return [UInt8](try signingKey.key.signature(for: message.providerData()))
+            return [UInt8](try signingKey.key.signature(for: message.tlsPrimData()))
         } catch {
             throw .providerFailure
         }
@@ -74,6 +74,6 @@ public enum TLSFoundationEd25519: P2PCoreCrypto.SignatureScheme {
         for message: Span<UInt8>,
         with verifyingKey: VerifyingKey
     ) -> Bool {
-        verifyingKey.key.isValidSignature(signature.providerData(), for: message.providerData())
+        verifyingKey.key.isValidSignature(signature.tlsPrimData(), for: message.tlsPrimData())
     }
 }

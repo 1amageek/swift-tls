@@ -3,7 +3,7 @@
 /// The running-hash logic now lives in the Embedded-clean
 /// `TLSCryptoCore.TLSTranscriptHash<C>`, routed through the
 /// `P2PCoreCrypto.HashFunction` seam. This adapter preserves the existing
-/// `Data`-based API by specialising the core at `C = TLSFoundationProvider` and
+/// `Data`-based API by specialising the core at `C = TLSProvider` and
 /// bridging `Data` ↔ `[UInt8]` at the boundary.
 ///
 /// For TLS 1.3:
@@ -22,7 +22,7 @@ import TLSCryptoCore
 /// Maintains a running hash of handshake messages (Foundation adapter).
 /// Supports both SHA-256 and SHA-384 based on cipher suite.
 public struct TranscriptHash: Sendable {
-    private var core: TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider>
+    private var core: TLSCryptoCore.TLSTranscriptHash<TLSProvider>
 
     /// Hash output length in bytes
     public var hashLength: Int { core.hashLength }
@@ -31,16 +31,16 @@ public struct TranscriptHash: Sendable {
 
     /// Initialize with default SHA-256
     public init() {
-        self.core = TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider>()
+        self.core = TLSCryptoCore.TLSTranscriptHash<TLSProvider>()
     }
 
     /// Initialize with specific cipher suite
     public init(cipherSuite: CipherSuite) {
-        self.core = TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider>(cipherSuite: cipherSuite)
+        self.core = TLSCryptoCore.TLSTranscriptHash<TLSProvider>(cipherSuite: cipherSuite)
     }
 
     /// Internal init wrapping a core value (for copy / fromMessageHash)
-    private init(core: TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider>) {
+    private init(core: TLSCryptoCore.TLSTranscriptHash<TLSProvider>) {
         self.core = core
     }
 
@@ -50,7 +50,7 @@ public struct TranscriptHash: Sendable {
     /// transcript to `TLSHandshakeCore.TLSClientAuthMachine` at the
     /// EncryptedExtensions boundary. After the hand-off the adapter must not
     /// update this transcript again (the core owns it from there).
-    var coreValue: TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider> { core }
+    var coreValue: TLSCryptoCore.TLSTranscriptHash<TLSProvider> { core }
 
     // MARK: - Update
 
@@ -94,7 +94,7 @@ public struct TranscriptHash: Sendable {
         clientHello1Hash: Data,
         cipherSuite: CipherSuite = .tls_aes_128_gcm_sha256
     ) -> TranscriptHash {
-        let core = TLSCryptoCore.TLSTranscriptHash<TLSFoundationProvider>.fromMessageHash(
+        let core = TLSCryptoCore.TLSTranscriptHash<TLSProvider>.fromMessageHash(
             clientHello1Hash: [UInt8](clientHello1Hash),
             cipherSuite: cipherSuite
         )

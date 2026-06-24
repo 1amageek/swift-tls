@@ -32,7 +32,7 @@ public enum DTLSServerState: Sendable, Equatable {
     case failed(String)
 
     /// Bridge from the Embedded-clean FSM state.
-    init(core: DTLSServerHandshake<TLSFoundationProvider>.ServerState) {
+    init(core: DTLSServerHandshake<TLSProvider>.ServerState) {
         switch core {
         case .idle: self = .idle
         case .waitingClientHelloWithCookie: self = .waitingClientHelloWithCookie

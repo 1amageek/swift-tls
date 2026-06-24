@@ -263,7 +263,7 @@ public enum KeyExchange: Sendable {
 
 extension KeyExchange {
     /// Computes a Diffie-Hellman shared secret through the Embedded-clean
-    /// `TLSKeyExchange<TLSFoundationProvider>` core, which routes the agreement
+    /// `TLSKeyExchange<TLSProvider>` core, which routes the agreement
     /// through the `CryptoProvider.KeyAgreement` seam. Byte-identical to the legacy
     /// direct-CryptoKit path (see `TLSKeyExchangeSignatureSeamDifferentialTests`).
     /// A core failure is surfaced as `KeyExchangeError.keyAgreementFailed` rather
@@ -275,7 +275,7 @@ extension KeyExchange {
     ) throws -> KeyExchangeSecret {
         let peerBytes = [UInt8](peerPublicKeyBytes)
         do {
-            let secret = try TLSKeyExchange<TLSFoundationProvider>.sharedSecret(
+            let secret = try TLSKeyExchange<TLSProvider>.sharedSecret(
                 group: group,
                 privateKeyBytes: privateKeyBytes.span,
                 peerPublicKeyBytes: peerBytes.span)

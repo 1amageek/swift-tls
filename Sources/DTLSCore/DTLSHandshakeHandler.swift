@@ -2,7 +2,7 @@
 ///
 /// These handlers keep the historical `Data`-based, `Mutex`-protected public API and
 /// drive the Embedded-clean `DTLSHandshakeCore` FSM (`DTLSClientHandshake<C>` /
-/// `DTLSServerHandshake<C>`, specialised at `C = TLSFoundationProvider`). The FSM
+/// `DTLSServerHandshake<C>`, specialised at `C = TLSProvider`). The FSM
 /// owns the state machine, message_seq ordering/dedup, transcript accumulation, the
 /// DTLS 1.2 PRF + key schedule (over the crypto seam), and the Finished MAC; this
 /// adapter owns everything that cannot live in an Embedded target:
@@ -98,7 +98,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
     private let supportedCipherSuites: [DTLSCipherSuite]
 
     private struct HandlerState: Sendable {
-        var fsm = DTLSClientHandshake<TLSFoundationProvider>()
+        var fsm = DTLSClientHandshake<TLSProvider>()
         /// Our ECDHE key pair (created on ServerHelloDone).
         var keyExchange: KeyExchange?
         /// The original ClientHello random, reused for the cookie retry.
@@ -266,7 +266,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
         let certMsg = CertificateMessage(certificate: certificate)
         let certBody = certMsg.encode()
 
-        let inputs = DTLSClientHandshake<TLSFoundationProvider>.ClientFlightInputs(
+        let inputs = DTLSClientHandshake<TLSProvider>.ClientFlightInputs(
             sharedSecret: [UInt8](sharedSecret.rawRepresentation),
             clientPublicKey: [UInt8](keyExchange.publicKeyBytes),
             certificateBody: [UInt8](certBody)
@@ -307,12 +307,12 @@ public final class DTLSServerHandshakeHandler: Sendable {
     private let cookieProvider: DTLSCookieSecretProvider
 
     private struct HandlerState: Sendable {
-        var fsm: DTLSServerHandshake<TLSFoundationProvider>
+        var fsm: DTLSServerHandshake<TLSProvider>
         /// Our ECDHE key pair (created when building the server flight).
         var keyExchange: KeyExchange?
 
         init(requireClientCertificate: Bool) {
-            self.fsm = DTLSServerHandshake<TLSFoundationProvider>(
+            self.fsm = DTLSServerHandshake<TLSProvider>(
                 requireClientCertificate: requireClientCertificate
             )
         }
@@ -515,7 +515,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
         selectedSuite: DTLSCipherSuite,
         state s: inout HandlerState,
         cookieValid: Bool
-    ) throws -> DTLSServerHandshake<TLSFoundationProvider>.ServerFlightInputs {
+    ) throws -> DTLSServerHandshake<TLSProvider>.ServerFlightInputs {
         guard cookieValid else {
             return try emptyFlightInputs()
         }
@@ -536,7 +536,7 @@ public final class DTLSServerHandshakeHandler: Sendable {
         )
         let skeBody = ske.encode()
 
-        return DTLSServerHandshake<TLSFoundationProvider>.ServerFlightInputs(
+        return DTLSServerHandshake<TLSProvider>.ServerFlightInputs(
             serverRandom: serverRandom,
             certificateBody: [UInt8](certBody),
             serverKeyExchangeBody: [UInt8](skeBody)
@@ -545,8 +545,8 @@ public final class DTLSServerHandshakeHandler: Sendable {
 
     /// Placeholder inputs for the invalid-cookie path (never sent — the core throws
     /// `cookieMismatch` before they are used).
-    private func emptyFlightInputs() throws -> DTLSServerHandshake<TLSFoundationProvider>.ServerFlightInputs {
-        DTLSServerHandshake<TLSFoundationProvider>.ServerFlightInputs(
+    private func emptyFlightInputs() throws -> DTLSServerHandshake<TLSProvider>.ServerFlightInputs {
+        DTLSServerHandshake<TLSProvider>.ServerFlightInputs(
             serverRandom: [UInt8](repeating: 0, count: 32),
             certificateBody: [],
             serverKeyExchangeBody: []

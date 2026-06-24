@@ -23,9 +23,9 @@ public enum TLSSignature {
         privateKey: P256.Signing.PrivateKey
     ) throws -> Data {
         let message = [UInt8](data)
-        let signing = try TLSFoundationP256Signature.signingKey(
+        let signing = try TLSDERP256Signature.signingKey(
             rawRepresentation: [UInt8](privateKey.rawRepresentation).span)
-        return Data(try TLSFoundationP256Signature.sign(message.span, with: signing))
+        return Data(try TLSDERP256Signature.sign(message.span, with: signing))
     }
 
     /// Sign data using the specified scheme
@@ -61,9 +61,9 @@ public enum TLSSignature {
         for data: Data,
         publicKey: P256.Signing.PublicKey
     ) throws -> Bool {
-        let verifying = try TLSFoundationP256Signature.verifyingKey(
+        let verifying = try TLSDERP256Signature.verifyingKey(
             rawRepresentation: [UInt8](publicKey.x963Representation).span)
-        return TLSFoundationP256Signature.isValid(
+        return TLSDERP256Signature.isValid(
             signature: [UInt8](signature).span,
             for: [UInt8](data).span,
             with: verifying)
@@ -147,24 +147,24 @@ public enum SigningKey: TLSSigningKey, Sendable {
     /// Sign data.
     ///
     /// Routes through the `P2PCoreCrypto.SignatureScheme` seam (the
-    /// `TLSFoundation*Signature` backends) so signing shares the exact code path
+    /// the `TLSDER*Signature` backends) so signing shares the exact code path
     /// `TLSCryptoCore.TLSSignatureSigner` uses. Byte-format-identical to the legacy
     /// direct-CryptoKit path: ECDSA → DER, Ed25519 → raw 64-byte signature.
     public func sign(_ data: Data) throws -> Data {
         let message = [UInt8](data)
         switch self {
         case .p256(let key):
-            let signing = try TLSFoundationP256Signature.signingKey(
+            let signing = try TLSDERP256Signature.signingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return Data(try TLSFoundationP256Signature.sign(message.span, with: signing))
+            return Data(try TLSDERP256Signature.sign(message.span, with: signing))
         case .p384(let key):
-            let signing = try TLSFoundationP384Signature.signingKey(
+            let signing = try TLSDERP384Signature.signingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return Data(try TLSFoundationP384Signature.sign(message.span, with: signing))
+            return Data(try TLSDERP384Signature.sign(message.span, with: signing))
         case .ed25519(let key):
-            let signing = try TLSFoundationEd25519.signingKey(
+            let signing = try TLSEd25519.signingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return Data(try TLSFoundationEd25519.sign(message.span, with: signing))
+            return Data(try TLSEd25519.sign(message.span, with: signing))
         }
     }
 
@@ -181,6 +181,24 @@ public enum SigningKey: TLSSigningKey, Sendable {
     /// Generate a new Ed25519 signing key
     public static func generateEd25519() -> SigningKey {
         .ed25519(Curve25519.Signing.PrivateKey())
+    }
+
+    /// Build a signing key from a raw private-key representation and scheme.
+    ///
+    /// Used by the `TLS` facade to translate a `[UInt8]`-currency `TLSIdentity`
+    /// into the engine signing key. Throws ``SignatureError/invalidPublicKey`` for
+    /// malformed key bytes or an unsupported scheme (no silent fallback).
+    public init(rawPrivateKey: [UInt8], scheme: SignatureScheme) throws {
+        switch scheme {
+        case .ecdsa_secp256r1_sha256:
+            self = .p256(try P256.Signing.PrivateKey(rawRepresentation: Data(rawPrivateKey)))
+        case .ecdsa_secp384r1_sha384:
+            self = .p384(try P384.Signing.PrivateKey(rawRepresentation: Data(rawPrivateKey)))
+        case .ed25519:
+            self = .ed25519(try Curve25519.Signing.PrivateKey(rawRepresentation: Data(rawPrivateKey)))
+        default:
+            throw SignatureError.unsupportedScheme(scheme)
+        }
     }
 }
 
@@ -233,7 +251,7 @@ public enum VerificationKey: TLSVerificationKey, Sendable {
     /// Verify a signature.
     ///
     /// Routes through the `P2PCoreCrypto.SignatureScheme` seam (the
-    /// `TLSFoundation*Signature` backends) so verification shares the exact code
+    /// the `TLSDER*Signature` backends) so verification shares the exact code
     /// path `TLSCryptoCore.TLSSignatureVerifier` uses. An invalid signature is an
     /// explicit `false` — never a silent accept (RFC 8446 §4.4.3 proof of
     /// possession). Byte-input-identical to the legacy direct-CryptoKit path
@@ -243,19 +261,19 @@ public enum VerificationKey: TLSVerificationKey, Sendable {
         let message = [UInt8](data)
         switch self {
         case .p256(let key):
-            let verifying = try TLSFoundationP256Signature.verifyingKey(
+            let verifying = try TLSDERP256Signature.verifyingKey(
                 rawRepresentation: [UInt8](key.x963Representation).span)
-            return TLSFoundationP256Signature.isValid(
+            return TLSDERP256Signature.isValid(
                 signature: sig.span, for: message.span, with: verifying)
         case .p384(let key):
-            let verifying = try TLSFoundationP384Signature.verifyingKey(
+            let verifying = try TLSDERP384Signature.verifyingKey(
                 rawRepresentation: [UInt8](key.x963Representation).span)
-            return TLSFoundationP384Signature.isValid(
+            return TLSDERP384Signature.isValid(
                 signature: sig.span, for: message.span, with: verifying)
         case .ed25519(let key):
-            let verifying = try TLSFoundationEd25519.verifyingKey(
+            let verifying = try TLSEd25519.verifyingKey(
                 rawRepresentation: [UInt8](key.rawRepresentation).span)
-            return TLSFoundationEd25519.isValid(
+            return TLSEd25519.isValid(
                 signature: sig.span, for: message.span, with: verifying)
         }
     }

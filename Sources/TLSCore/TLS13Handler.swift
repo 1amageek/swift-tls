@@ -696,7 +696,7 @@ public final class ServerStateMachine: Sendable {
         /// Finished, client CertificateVerify/Finished verification). The adapter
         /// drives it under the `Mutex` and keeps config negotiation, X.509, the
         /// MLKEM hybrid, and `any TLSSigningKey` signing.
-        var serverMachine: TLSServerHandshake<TLSFoundationProvider>?
+        var serverMachine: TLSServerHandshake<TLSProvider>?
     }
 
     public init(configuration: TLSConfiguration, sessionTicketStore: SessionTicketStore? = nil) {
@@ -740,7 +740,7 @@ public final class ServerStateMachine: Sendable {
             // ticket-suite hash. After a HelloRetryRequest the existing machine
             // (which already folded message_hash(CH1) + HRR) is reused.
             if state.serverMachine == nil {
-                state.serverMachine = TLSServerHandshake<TLSFoundationProvider>()
+                state.serverMachine = TLSServerHandshake<TLSProvider>()
             }
 
             let clientHello = try ClientHello.decode(from: data)
@@ -898,7 +898,7 @@ public final class ServerStateMachine: Sendable {
                     // the session's cipher suite.
                     let binderValid: Bool
                     do {
-                        binderValid = try TLSServerHandshake<TLSFoundationProvider>.isValidPSKBinder(
+                        binderValid = try TLSServerHandshake<TLSProvider>.isValidPSKBinder(
                             psk: Self.secretBytes(psk),
                             cipherSuite: session.cipherSuite,
                             truncatedClientHello: [UInt8](truncatedTranscript),
@@ -926,11 +926,11 @@ public final class ServerStateMachine: Sendable {
             // Decide PSK early-secret material and 0-RTT acceptance adapter-side
             // (config + replay protection). The early secret / early-traffic-secret
             // derivation and the transcript folding move to the core.
-            var acceptedPSK: TLSServerHandshake<TLSFoundationProvider>.AcceptedPSK?
+            var acceptedPSK: TLSServerHandshake<TLSProvider>.AcceptedPSK?
             var earlyDataAccepted = false
             if selectedPskIndex != nil,
                case .valid(_, let session, let psk) = pskValidationResult {
-                acceptedPSK = TLSServerHandshake<TLSFoundationProvider>.AcceptedPSK(
+                acceptedPSK = TLSServerHandshake<TLSProvider>.AcceptedPSK(
                     psk: Self.secretBytes(psk),
                     cipherSuite: session.cipherSuite
                 )
@@ -1142,7 +1142,7 @@ public final class ServerStateMachine: Sendable {
             guard var serverMachine = state.serverMachine else {
                 throw TLSHandshakeError.internalError("Server FSM not initialized")
             }
-            let flightParameters = TLSServerHandshake<TLSFoundationProvider>.FlightParameters(
+            let flightParameters = TLSServerHandshake<TLSProvider>.FlightParameters(
                 cipherSuite: cipherSuite,
                 acceptedPSK: acceptedPSK,
                 keyExchange: .precomputed([UInt8](sharedSecret.rawRepresentation)),
@@ -1153,7 +1153,7 @@ public final class ServerStateMachine: Sendable {
             let flightResult: (
                 handshakeSecrets: (client: [UInt8], server: [UInt8]),
                 clientEarlyTrafficSecret: [UInt8]?,
-                certificateVerifyRequest: TLSServerHandshake<TLSFoundationProvider>.ServerCertificateVerifyRequest?
+                certificateVerifyRequest: TLSServerHandshake<TLSProvider>.ServerCertificateVerifyRequest?
             )
             do {
                 flightResult = try serverMachine.beginServerFlight(

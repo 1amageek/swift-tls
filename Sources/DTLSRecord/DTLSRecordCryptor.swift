@@ -16,7 +16,7 @@
 /// the `CryptoProvider.AEAD` seam. This adapter:
 /// - keeps the existing stateless static `seal`/`open` API (sequence/epoch state
 ///   stays in `DTLSRecordLayer`/`DTLSSession`, passed in as values),
-/// - specialises the core at `C = TLSFoundationProvider`, `A = DTLSRecordAEAD`
+/// - specialises the core at `C = TLSProvider`, `A = DTLSRecordAEAD`
 ///   (swift-crypto AES-GCM, byte-identical to the legacy direct-Crypto path),
 /// - bridges `Data` ↔ `[UInt8]`/`SymmetricKey` at the boundary,
 /// - bridges the core's typed `DTLSRecordProtectionError` to the public
@@ -31,7 +31,7 @@ import DTLSRecordCore
 public enum DTLSRecordCryptor: Sendable {
 
     /// The concrete protector type the host adapter specialises.
-    private typealias Protector = DTLSRecordProtector<TLSFoundationProvider, DTLSRecordAEAD>
+    private typealias Protector = DTLSRecordProtector<TLSProvider, DTLSRecordAEAD>
 
     /// Encrypt a plaintext record payload using AES-GCM
     /// - Parameters:

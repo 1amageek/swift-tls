@@ -1,4 +1,4 @@
-/// P-384 ECDH for the `TLSFoundationProvider` key-agreement seam.
+/// P-384 ECDH for the `TLSProvider` key-agreement seam.
 ///
 /// swift-crypto / CryptoKit backend, byte-identical to the legacy
 /// `KeyExchange.p384` path: private = 48-byte raw scalar, public = 97-byte X9.62
@@ -14,7 +14,7 @@ import P2PCoreBytes
 import P2PCoreCrypto
 
 /// P-384 key agreement over swift-crypto. Conforms `P2PCoreCrypto.KeyAgreement`.
-public enum TLSFoundationP384Agreement: P2PCoreCrypto.KeyAgreement {
+public enum TLSP384Agreement: P2PCoreCrypto.KeyAgreement {
     public struct PrivateKey: Sendable {
         let key: P384.KeyAgreement.PrivateKey
     }
@@ -30,7 +30,7 @@ public enum TLSFoundationP384Agreement: P2PCoreCrypto.KeyAgreement {
     public static func privateKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PrivateKey {
         do {
             return PrivateKey(key: try P384.KeyAgreement.PrivateKey(
-                rawRepresentation: rawRepresentation.providerData()))
+                rawRepresentation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 48, actual: rawRepresentation.count)
         }
@@ -39,7 +39,7 @@ public enum TLSFoundationP384Agreement: P2PCoreCrypto.KeyAgreement {
     public static func publicKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PublicKey {
         do {
             return PublicKey(key: try P384.KeyAgreement.PublicKey(
-                x963Representation: rawRepresentation.providerData()))
+                x963Representation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 97, actual: rawRepresentation.count)
         }

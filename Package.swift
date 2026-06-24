@@ -21,26 +21,32 @@ let package = Package(
         .watchOS(.v26), .visionOS(.v26),
     ],
     products: [
-        .library(name: "TLSWireCore", targets: ["TLSWireCore"]),
-        .library(name: "TLSCryptoCore", targets: ["TLSCryptoCore"]),
-        .library(name: "TLSHandshakeCore", targets: ["TLSHandshakeCore"]),
-        .library(name: "DTLSWireCore", targets: ["DTLSWireCore"]),
-        .library(name: "DTLSHandshakeCore", targets: ["DTLSHandshakeCore"]),
-        .library(name: "TLSRecordCore", targets: ["TLSRecordCore"]),
-        .library(name: "DTLSRecordCore", targets: ["DTLSRecordCore"]),
-        .library(name: "TLSCore", targets: ["TLSCore"]),
-        .library(name: "TLSRecord", targets: ["TLSRecord"]),
-        .library(name: "DTLSCore", targets: ["DTLSCore"]),
-        .library(name: "DTLSRecord", targets: ["DTLSRecord"]),
+        // ---- Tier-1 facade (the default `import TLS`) ----
+        .library(name: "TLS", targets: ["TLS"]),
+        // ---- Tier-3 pure wire codecs (separate opt-in import) ----
+        .library(name: "TLSWire", targets: ["TLSWireCore"]),
+        .library(name: "DTLSWire", targets: ["DTLSWireCore"]),
     ],
     dependencies: [
+        // NOTE on the crypto provider:
+        // The Embedded-first design wanted swift-tls to specialise its cores at
+        // `P2PCrypto.DefaultCryptoProvider`. That is NOT possible while swift-tls
+        // depends on swift-certificates: swift-p2p-crypto's `P2PCrypto` pulls a
+        // VENDORED swift-crypto floored at .macOS(.v26), and a path dependency wins
+        // SPM identity resolution over the remote `apple/swift-crypto`. The
+        // vendored v26 `Crypto` product then cannot satisfy swift-certificates
+        // (whose targets support .macOS(.v12)) — SPM rejects it. swift-tls
+        // therefore keeps the remote `apple/swift-crypto` (low floor) and builds
+        // its single unified `TLSProvider` over it. The duplicate standalone
+        // provider `TLSFoundationProvider` is still deleted (one provider now).
+        .package(path: "../swift-p2p-core"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
-        .package(path: "../swift-p2p-core"),
     ],
     targets: [
         // ---- Embedded-clean wire codec (dual-build: host + Embedded) ----
+        // Tier-3 product `TLSWire` (pure codec over ByteReader/ByteWriter).
         .target(
             name: "TLSWireCore",
             dependencies: [
@@ -50,6 +56,7 @@ let package = Package(
             swiftSettings: coreSettings
         ),
         // ---- Embedded-clean TLS 1.3 key schedule (dual-build: host + Embedded) ----
+        // package-visible facade internal (generic over C: CryptoProvider).
         .target(
             name: "TLSCryptoCore",
             dependencies: [
@@ -73,6 +80,7 @@ let package = Package(
             swiftSettings: coreSettings
         ),
         // ---- Embedded-clean DTLS wire codec (dual-build: host + Embedded) ----
+        // Tier-3 product `DTLSWire`.
         .target(
             name: "DTLSWireCore",
             dependencies: [
@@ -115,7 +123,7 @@ let package = Package(
             path: "Sources/DTLSRecordCore",
             swiftSettings: coreSettings
         ),
-        // ---- Foundation adapter: keeps the existing Data-based public API ----
+        // ---- Host engine: TLS 1.3 handshake + crypto/X509 (package-visible) ----
         .target(
             name: "TLSCore",
             dependencies: [
@@ -124,13 +132,13 @@ let package = Package(
                 "TLSHandshakeCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
-                .product(name: "P2PCoreFoundation", package: "swift-p2p-core"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "SwiftASN1", package: "swift-asn1"),
             ],
             path: "Sources/TLSCore"
         ),
+        // ---- Host record engine behind TLSClient/TLSServer (package-visible) ----
         .target(
             name: "TLSRecord",
             dependencies: [
@@ -140,6 +148,7 @@ let package = Package(
             ],
             path: "Sources/TLSRecord"
         ),
+        // ---- Host DTLS engine (package-visible) ----
         .target(
             name: "DTLSCore",
             dependencies: [
@@ -153,6 +162,7 @@ let package = Package(
             ],
             path: "Sources/DTLSCore"
         ),
+        // ---- Host DTLS record engine behind DTLSClient/DTLSServer (package-visible) ----
         .target(
             name: "DTLSRecord",
             dependencies: [
@@ -162,9 +172,23 @@ let package = Package(
             ],
             path: "Sources/DTLSRecord"
         ),
+        // ---- Tier-1 facade: TLSClient/TLSServer/DTLSClient/DTLSServer ----
+        // The only public-facing module a normal user imports. Non-generic, fixed
+        // to DefaultCryptoProvider, [UInt8]/Span<UInt8> currency, one TLSError.
+        .target(
+            name: "TLS",
+            dependencies: [
+                "TLSRecord",
+                "DTLSRecord",
+                "TLSCore",
+                "DTLSCore",
+            ],
+            path: "Sources/TLS"
+        ),
         .testTarget(
             name: "TLSCoreTests",
             dependencies: [
+                "TLS",
                 "TLSCore",
                 "TLSRecord",
                 "TLSCryptoCore",
@@ -175,6 +199,7 @@ let package = Package(
         .testTarget(
             name: "TLSRecordTests",
             dependencies: [
+                "TLS",
                 "TLSRecord",
                 "TLSCore",
                 "TLSRecordCore",
@@ -184,12 +209,13 @@ let package = Package(
         ),
         .testTarget(
             name: "DTLSCoreTests",
-            dependencies: ["DTLSCore", "TLSCore"],
+            dependencies: ["TLS", "DTLSCore", "TLSCore"],
             path: "Tests/DTLSCoreTests"
         ),
         .testTarget(
             name: "DTLSRecordTests",
             dependencies: [
+                "TLS",
                 "DTLSRecord",
                 "DTLSCore",
                 "DTLSRecordCore",

@@ -4,7 +4,7 @@
 /// `TLSCryptoCore.TLSKeySchedule<C>`, routed through the
 /// `P2PCoreCrypto.CryptoProvider` seam. This adapter type preserves the existing
 /// `SymmetricKey`/`Data` public API by specialising the core at
-/// `C = TLSFoundationProvider` (swift-tls's own swift-crypto backend) and
+/// `C = TLSProvider` (swift-tls's own swift-crypto backend) and
 /// bridging `[UInt8]` ↔ `SymmetricKey`/`Data` at the boundary. Behavior is
 /// byte-for-byte identical to the pre-seam implementation; see
 /// `RFC8448VectorTests` and `TLSKeyScheduleSeamDifferentialTests`.
@@ -60,7 +60,7 @@ private func mapCoreError(_ error: TLSKeyScheduleCoreError) -> TLSKeyScheduleErr
 /// Manages TLS 1.3 key derivation (Foundation adapter over `TLSCryptoCore`).
 public struct TLSKeySchedule: Sendable {
 
-    private var core: TLSCryptoCore.TLSKeySchedule<TLSFoundationProvider>
+    private var core: TLSCryptoCore.TLSKeySchedule<TLSProvider>
 
     /// The negotiated cipher suite.
     public var cipherSuite: CipherSuite { core.cipherSuite }
@@ -73,7 +73,7 @@ public struct TLSKeySchedule: Sendable {
     /// Creates a new key schedule
     /// - Parameter cipherSuite: The negotiated cipher suite
     public init(cipherSuite: CipherSuite = .tls_aes_128_gcm_sha256) {
-        self.core = TLSCryptoCore.TLSKeySchedule<TLSFoundationProvider>(cipherSuite: cipherSuite)
+        self.core = TLSCryptoCore.TLSKeySchedule<TLSProvider>(cipherSuite: cipherSuite)
     }
 
     /// The underlying Embedded-clean core value.
@@ -82,7 +82,7 @@ public struct TLSKeySchedule: Sendable {
     /// advanced to the handshake-secret state) to
     /// `TLSHandshakeCore.TLSClientAuthMachine`, and to restore it afterwards so
     /// the adapter can derive ticket PSKs post-handshake.
-    var coreValue: TLSCryptoCore.TLSKeySchedule<TLSFoundationProvider> {
+    var coreValue: TLSCryptoCore.TLSKeySchedule<TLSProvider> {
         get { core }
         set { core = newValue }
     }
@@ -294,7 +294,7 @@ public struct TrafficKeys: Sendable {
             let keys = try TLSTrafficKeys.derive(
                 secret: secretBytes.span,
                 cipherSuite: cipherSuite,
-                provider: TLSFoundationProvider.self
+                provider: TLSProvider.self
             )
             self.key = SymmetricKey(data: Data(keys.key))
             self.iv = Data(keys.iv)

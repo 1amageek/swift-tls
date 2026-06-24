@@ -19,7 +19,7 @@
 /// verify-roundtrip and cross-verification against the legacy path.
 ///
 /// Generic over `C: CryptoProvider`; the adapter specialises at
-/// `C = TLSFoundationProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
+/// `C = TLSProvider`. Embedded-clean: no Foundation, no `any`, no Mutex,
 /// no swift-crypto, typed throws.
 
 import P2PCoreBytes

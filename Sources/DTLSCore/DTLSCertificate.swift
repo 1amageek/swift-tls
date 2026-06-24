@@ -31,6 +31,14 @@ public struct DTLSCertificate: Sendable {
         self.fingerprint = CertificateFingerprint.fromDER(derEncoded)
     }
 
+    /// Build a DTLS certificate from `[UInt8]`-currency material (the `TLS` facade
+    /// path). DTLS in this stack uses ECDSA P-256, so the raw private key is a
+    /// 32-byte P-256 scalar. Throws if the DER or key bytes are malformed.
+    public init(der: [UInt8], rawP256PrivateKey: [UInt8]) throws {
+        let key = try P256.Signing.PrivateKey(rawRepresentation: Data(rawP256PrivateKey))
+        try self.init(derEncoded: Data(der), privateKey: key)
+    }
+
     /// Generate a self-signed ECDSA P-256 certificate
     /// - Parameter commonName: The Common Name (CN) for the certificate subject
     /// - Returns: A new self-signed certificate with private key

@@ -6,7 +6,7 @@
 /// swift-tls shipped before the seam refactor (the legacy `TLSRecordCryptor`'s
 /// `AES.GCM.seal/open` and `ChaChaPoly.seal/open`).
 ///
-/// `TLSFoundationProvider`'s own AEAD associated types are the unsupported
+/// `TLSProvider`'s own AEAD associated types are the unsupported
 /// placeholders (the key schedule performs no AEAD), so record protection brings
 /// its own concrete AEAD rather than reusing `C.makeAESGCM*`. A single concrete
 /// type dispatches on the cipher suite internally so one `A` parameter covers all

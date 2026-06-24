@@ -1,4 +1,4 @@
-/// X25519 ECDH for the `TLSFoundationProvider` key-agreement seam.
+/// X25519 ECDH for the `TLSProvider` key-agreement seam.
 ///
 /// swift-crypto / CryptoKit backend, byte-identical to the legacy
 /// `KeyExchange.x25519` path (32-byte raw private + public encodings, 32-byte
@@ -13,7 +13,7 @@ import P2PCoreBytes
 import P2PCoreCrypto
 
 /// X25519 key agreement over swift-crypto. Conforms `P2PCoreCrypto.KeyAgreement`.
-public enum TLSFoundationX25519: P2PCoreCrypto.KeyAgreement {
+public enum TLSX25519: P2PCoreCrypto.KeyAgreement {
     public struct PrivateKey: Sendable {
         let key: Curve25519.KeyAgreement.PrivateKey
     }
@@ -29,7 +29,7 @@ public enum TLSFoundationX25519: P2PCoreCrypto.KeyAgreement {
     public static func privateKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PrivateKey {
         do {
             return PrivateKey(key: try Curve25519.KeyAgreement.PrivateKey(
-                rawRepresentation: rawRepresentation.providerData()))
+                rawRepresentation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 32, actual: rawRepresentation.count)
         }
@@ -38,7 +38,7 @@ public enum TLSFoundationX25519: P2PCoreCrypto.KeyAgreement {
     public static func publicKey(rawRepresentation: Span<UInt8>) throws(P2PCoreCrypto.CryptoError) -> PublicKey {
         do {
             return PublicKey(key: try Curve25519.KeyAgreement.PublicKey(
-                rawRepresentation: rawRepresentation.providerData()))
+                rawRepresentation: rawRepresentation.tlsPrimData()))
         } catch {
             throw .invalidLength(expected: 32, actual: rawRepresentation.count)
         }

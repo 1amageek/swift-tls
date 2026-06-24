@@ -13,7 +13,7 @@
 /// (`consuming`).
 ///
 /// Embedded-clean: no Foundation, no `any`, no swift-crypto. Generic over the
-/// crypto provider; the adapter specialises at `C = TLSFoundationProvider`.
+/// crypto provider; the adapter specialises at `C = TLSProvider`.
 
 import P2PCoreBytes
 import P2PCoreCrypto

@@ -3,7 +3,7 @@
 /// Restores the historical `Data`-based `DTLSKeySchedule` / `DTLSKeyBlock` public
 /// surface (used by `DTLSConnection` and the existing test suite) and delegates the
 /// actual derivation to ``DTLSHandshakeCore/DTLSKeyScheduleCore`` specialised at
-/// `C = TLSFoundationProvider`, so the master secret, key block, and Finished
+/// `C = TLSProvider`, so the master secret, key block, and Finished
 /// verify_data are byte-identical to the pre-extraction implementation.
 ///
 /// RFC 5246 Section 8.1:
@@ -50,10 +50,10 @@ public struct DTLSKeyBlock: Sendable {
 
 /// DTLS 1.2 key schedule for deriving traffic keys
 public struct DTLSKeySchedule: Sendable {
-    private var core: DTLSKeyScheduleCore<TLSFoundationProvider>
+    private var core: DTLSKeyScheduleCore<TLSProvider>
 
     public init(cipherSuite: DTLSCipherSuite) {
-        self.core = DTLSKeyScheduleCore<TLSFoundationProvider>(cipherSuite: cipherSuite)
+        self.core = DTLSKeyScheduleCore<TLSProvider>(cipherSuite: cipherSuite)
     }
 
     /// Derive master_secret from pre_master_secret and randoms
