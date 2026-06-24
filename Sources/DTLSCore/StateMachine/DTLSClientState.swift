@@ -6,6 +6,8 @@
 
 import Foundation
 import TLSCore
+import TLSWireCore
+import DTLSWireCore
 import DTLSHandshakeCore
 
 /// Client handshake state
@@ -75,7 +77,7 @@ public struct DTLSClientContext: Sendable {
     public var serverPublicKey: Data?
 
     /// Server's named group
-    public var serverNamedGroup: TLSCore.NamedGroup?
+    public var serverNamedGroup: TLSWireCore.NamedGroup?
 
     /// Our ECDHE key pair
     public var keyExchange: KeyExchange?

@@ -10,8 +10,12 @@
 /// TLS record header is 5 bytes (no epoch or sequence number).
 
 import Foundation
+import TLSCore
 import DTLSCore
-@_exported import DTLSRecordCore
+import DTLSWireCore
+// Plain `import` (NOT `@_exported`): the Tier-3 DTLS record codec is not re-exported
+// through this engine into the `TLS` facade's namespace (embedded-first-api.md §3.2).
+import DTLSRecordCore
 
 /// A decoded DTLS record
 public struct DTLSRecord: Sendable, Equatable {

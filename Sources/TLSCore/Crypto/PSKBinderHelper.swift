@@ -5,6 +5,7 @@
 /// `TLSWireCore`.
 
 import Foundation
+import TLSWireCore
 import Crypto
 
 // MARK: - PskIdentity convenience init (Date / SessionTicketData)

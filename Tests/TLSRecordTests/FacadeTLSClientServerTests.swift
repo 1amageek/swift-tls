@@ -9,6 +9,7 @@
 /// files; this file proves the facade faithfully drives the same engine.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 

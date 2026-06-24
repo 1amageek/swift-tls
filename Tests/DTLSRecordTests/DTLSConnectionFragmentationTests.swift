@@ -10,6 +10,8 @@
 /// - the non-fragmented happy path is unchanged.
 
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import DTLSRecord

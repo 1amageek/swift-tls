@@ -6,6 +6,7 @@
 /// `findExtension`. This file is Foundation-only adapter glue.
 
 import Foundation
+import TLSWireCore
 import P2PCoreBytes
 
 // MARK: - Encode helper

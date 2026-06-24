@@ -4,6 +4,7 @@
 /// Verifies the TLS state machine enforces correct message ordering.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 

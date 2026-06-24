@@ -9,7 +9,11 @@
 
 import Foundation
 import P2PCoreBytes
-@_exported import TLSWireCore
+// Plain `import` (NOT `@_exported`): the Tier-3 `TLSWire` wire codec must not be
+// re-exported through this engine into the `TLS` facade's namespace
+// (embedded-first-api.md §3.2). Files in this module that use wire types import
+// `TLSWireCore` themselves.
+import TLSWireCore
 
 // MARK: - Constant-time comparison (Data)
 

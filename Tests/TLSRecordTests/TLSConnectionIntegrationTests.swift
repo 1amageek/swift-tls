@@ -5,6 +5,7 @@
 /// encryption work correctly end-to-end.
 
 import Testing
+import TLSRecordCore
 import Foundation
 import Crypto
 

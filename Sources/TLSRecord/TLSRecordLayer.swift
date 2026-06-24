@@ -6,6 +6,8 @@
 import Foundation
 import Synchronization
 import TLSCore
+import TLSWireCore
+import TLSRecordCore
 
 // MARK: - Record Layer Output
 

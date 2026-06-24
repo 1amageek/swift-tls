@@ -36,6 +36,8 @@ import Synchronization
 import Crypto
 import DTLSCore
 import TLSCore
+import TLSWireCore
+import DTLSWireCore
 
 // MARK: - Output Type
 
@@ -90,6 +92,15 @@ public struct DTLSConnectionOutput: Sendable {
         self.receivedAlert = receivedAlert
         self.anomalies = anomalies
     }
+
+    // `[UInt8]` currency views for the Foundation-free `TLS` facade. Each is a
+    // single bulk `Data -> [UInt8]` copy.
+
+    /// `datagramsToSend` as `[[UInt8]]`.
+    public var datagramsToSendBytes: [[UInt8]] { datagramsToSend.map { [UInt8]($0) } }
+
+    /// `applicationData` as `[UInt8]`.
+    public var applicationDataBytes: [UInt8] { [UInt8](applicationData) }
 }
 
 // MARK: - Error Type
@@ -457,6 +468,40 @@ public final class DTLSConnection: Sendable {
     /// - Returns: Datagrams to retransmit
     public func handleTimeout() throws -> [Data] {
         try flightController.retransmit()
+    }
+
+    // MARK: - [UInt8] currency API (facade boundary)
+
+    // The `TLS` facade is `[UInt8]`/`Span<UInt8>`-currency and Foundation-free; these
+    // thin overloads let it drive the engine without naming `Data`. Each is a single
+    // bulk `Data <-> [UInt8]` copy over the `Data` core above — no new framing logic.
+
+    /// `processReceivedDatagram` over `[UInt8]` currency.
+    public func processReceivedDatagram(
+        _ data: [UInt8],
+        remoteAddress: [UInt8] = []
+    ) throws -> DTLSConnectionOutput {
+        try processReceivedDatagram(Data(data), remoteAddress: Data(remoteAddress))
+    }
+
+    /// `writeApplicationData` over `[UInt8]` currency.
+    public func writeApplicationData(_ data: [UInt8]) throws -> [UInt8] {
+        [UInt8](try writeApplicationData(Data(data)))
+    }
+
+    /// `startHandshake` over `[UInt8]` currency.
+    public func startHandshakeBytes(isClient: Bool) throws -> [[UInt8]] {
+        try startHandshake(isClient: isClient).map { [UInt8]($0) }
+    }
+
+    /// `close` over `[UInt8]` currency.
+    public func closeBytes() throws -> [UInt8] {
+        [UInt8](try close())
+    }
+
+    /// `handleTimeout` over `[UInt8]` currency.
+    public func handleTimeoutBytes() throws -> [[UInt8]] {
+        try handleTimeout().map { [UInt8]($0) }
     }
 
     // MARK: - Properties

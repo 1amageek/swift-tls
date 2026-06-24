@@ -1,6 +1,7 @@
 /// TLS 1.3 Key Schedule Tests
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

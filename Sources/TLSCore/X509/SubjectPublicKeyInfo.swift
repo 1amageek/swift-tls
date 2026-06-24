@@ -16,6 +16,7 @@
 /// ```
 
 import Foundation
+import TLSWireCore
 import Crypto
 import SwiftASN1
 

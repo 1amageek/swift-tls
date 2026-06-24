@@ -3,6 +3,7 @@
 /// Output events from TLS handshake processing.
 
 import Foundation
+import TLSWireCore
 import Crypto
 
 // MARK: - TLS Output

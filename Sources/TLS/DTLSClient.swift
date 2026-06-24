@@ -1,11 +1,13 @@
 /// Tier-1 DTLS 1.2 client over UDP datagrams.
 ///
-/// Non-generic facade fixed to `TLSCryptoProvider`. Wraps the package `DTLSConnection`
-/// engine and presents a `[UInt8]`/`Span<UInt8>` surface with one `TLSError`. The
-/// datagram methods return `[[UInt8]]` (a list of datagrams to send), matching
-/// DTLS's record-per-datagram model.
+/// Non-generic facade fixed to `TLSCryptoProvider`. Wraps the package
+/// `DTLSConnection` engine and presents a `[UInt8]`/`Span<UInt8>` surface with one
+/// `TLSError`. The datagram methods return `[[UInt8]]` (a list of datagrams to
+/// send), matching DTLS's record-per-datagram model.
+///
+/// Foundation-free: the facade drives the engine through its `[UInt8]`-currency
+/// API; the host-only `Data` bridging lives in the engine, never here.
 
-import Foundation
 import DTLSCore
 import DTLSRecord
 
@@ -24,7 +26,7 @@ public struct DTLSClient: Sendable {
     /// Starts the handshake, returning the ClientHello datagram(s) to send.
     public func startHandshake() throws(TLSError) -> [[UInt8]] {
         do {
-            return try engine.startHandshake(isClient: true).map { [UInt8]($0) }
+            return try engine.startHandshakeBytes(isClient: true)
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -34,10 +36,10 @@ public struct DTLSClient: Sendable {
     public func receive(_ datagram: Span<UInt8>) throws(TLSError) -> DTLSOutput {
         let input = datagram.facadeArray()
         do {
-            let output = try engine.processReceivedDatagram(Data(input))
+            let output = try engine.processReceivedDatagram(input)
             return DTLSOutput(
-                datagramsToSend: output.datagramsToSend.map { [UInt8]($0) },
-                applicationData: [UInt8](output.applicationData),
+                datagramsToSend: output.datagramsToSendBytes,
+                applicationData: output.applicationDataBytes,
                 handshakeComplete: output.handshakeComplete,
                 peerClosed: output.receivedAlert?.alertDescription == .closeNotify,
                 anomalies: output.anomalies.map(DTLSOutput.Anomaly.from)
@@ -51,7 +53,7 @@ public struct DTLSClient: Sendable {
     public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
         do {
-            return [UInt8](try engine.writeApplicationData(Data(input)))
+            return try engine.writeApplicationData(input)
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -60,7 +62,7 @@ public struct DTLSClient: Sendable {
     /// Emits a close_notify alert datagram to gracefully terminate.
     public func close() throws(TLSError) -> [UInt8] {
         do {
-            return [UInt8](try engine.close())
+            return try engine.closeBytes()
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -69,7 +71,7 @@ public struct DTLSClient: Sendable {
     /// Datagrams to retransmit on a timeout (DTLS flight retransmission).
     public func handleTimeout() throws(TLSError) -> [[UInt8]] {
         do {
-            return try engine.handleTimeout().map { [UInt8]($0) }
+            return try engine.handleTimeoutBytes()
         } catch {
             throw TLSError.fromDTLS(error)
         }

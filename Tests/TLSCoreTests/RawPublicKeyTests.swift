@@ -1,6 +1,7 @@
 /// Raw Public Key Authentication Tests (RFC 7250)
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

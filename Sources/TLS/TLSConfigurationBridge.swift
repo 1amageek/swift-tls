@@ -1,5 +1,5 @@
 /// Translates the facade `TLSConfiguration` into the engine
-/// `TLSCore.TLSConfiguration`.
+/// `TLSCore.TLSConfiguration` — the HOST X.509 validation strategy.
 ///
 /// The facade is `[UInt8]`-currency and free of swift-crypto/swift-certificates
 /// types; the engine config carries the real signing key, X.509 roots, and the
@@ -7,9 +7,17 @@
 /// at handshake setup. It preserves every security-relevant field — verifyPeer,
 /// trust roots, required client certificate, the mandatory CertificateVerify path,
 /// and the custom validator — unchanged.
-
+///
+/// X.509 chain validation is structurally bound to swift-certificates (Foundation,
+/// `X509Certificate.parse`), so this bridge is the HOST-ONLY validation strategy
+/// (embedded-first-api.md §D hard-spot resolution): it is gated by
+/// `#if canImport(Foundation)`. An Embedded build supplies the RFC-7250 raw-public-
+/// key strategy (`P2PCoreDER`) instead. The `certificateValidator` user hook on
+/// `TLSConfiguration` is preserved by both strategies.
+#if canImport(Foundation)
 import Foundation
 import TLSCore
+import TLSWireCore
 
 extension TLSConfiguration {
     /// Build the engine configuration. Throws `TLSError` for invalid material
@@ -88,3 +96,4 @@ extension TLSCertificateTypes.CertificateType {
         }
     }
 }
+#endif // canImport(Foundation)

@@ -3,6 +3,7 @@
 import Testing
 import Foundation
 import Crypto
+import DTLSRecordCore
 @testable import DTLSRecord
 @testable import DTLSCore
 import TLSCore

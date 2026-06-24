@@ -12,6 +12,7 @@
 /// adapter output and a fixed expected ciphertext.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 import P2PCoreBytes

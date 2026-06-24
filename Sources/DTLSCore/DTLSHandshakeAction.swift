@@ -8,6 +8,7 @@
 /// so the record layer can correctly manage epoch transitions.
 
 import Foundation
+import DTLSWireCore
 
 /// Output action from DTLS handshake processing
 public enum DTLSHandshakeAction: Sendable {

@@ -27,6 +27,7 @@
 
 import Foundation
 import TLSCore
+import TLSWireCore
 import TLSRecordCore
 import Synchronization
 

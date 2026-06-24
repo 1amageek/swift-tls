@@ -5,6 +5,7 @@
 /// and invalid fragments.
 
 import Testing
+import DTLSWireCore
 import Foundation
 @testable import DTLSCore
 

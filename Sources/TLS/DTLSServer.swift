@@ -3,8 +3,10 @@
 /// Mirror of `DTLSClient`. The server receives `remoteAddress` for the
 /// HelloVerifyRequest cookie binding (RFC 6347 §4.2.1); the facade threads it
 /// through `receive(_:from:)`.
+///
+/// Foundation-free: the facade drives the engine through its `[UInt8]`-currency
+/// API; the host-only `Data` bridging lives in the engine, never here.
 
-import Foundation
 import DTLSCore
 import DTLSRecord
 
@@ -24,7 +26,7 @@ public struct DTLSServer: Sendable {
     /// ClientHello arrives; the return is empty.
     public func startHandshake() throws(TLSError) -> [[UInt8]] {
         do {
-            return try engine.startHandshake(isClient: false).map { [UInt8]($0) }
+            return try engine.startHandshakeBytes(isClient: false)
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -36,10 +38,10 @@ public struct DTLSServer: Sendable {
         let input = datagram.facadeArray()
         let addr = remoteAddress.facadeArray()
         do {
-            let output = try engine.processReceivedDatagram(Data(input), remoteAddress: Data(addr))
+            let output = try engine.processReceivedDatagram(input, remoteAddress: addr)
             return DTLSOutput(
-                datagramsToSend: output.datagramsToSend.map { [UInt8]($0) },
-                applicationData: [UInt8](output.applicationData),
+                datagramsToSend: output.datagramsToSendBytes,
+                applicationData: output.applicationDataBytes,
                 handshakeComplete: output.handshakeComplete,
                 peerClosed: output.receivedAlert?.alertDescription == .closeNotify,
                 anomalies: output.anomalies.map(DTLSOutput.Anomaly.from)
@@ -53,7 +55,7 @@ public struct DTLSServer: Sendable {
     public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
         do {
-            return [UInt8](try engine.writeApplicationData(Data(input)))
+            return try engine.writeApplicationData(input)
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -62,7 +64,7 @@ public struct DTLSServer: Sendable {
     /// Emits a close_notify alert datagram to gracefully terminate.
     public func close() throws(TLSError) -> [UInt8] {
         do {
-            return [UInt8](try engine.close())
+            return try engine.closeBytes()
         } catch {
             throw TLSError.fromDTLS(error)
         }
@@ -71,7 +73,7 @@ public struct DTLSServer: Sendable {
     /// Datagrams to retransmit on a timeout (DTLS flight retransmission).
     public func handleTimeout() throws(TLSError) -> [[UInt8]] {
         do {
-            return try engine.handleTimeout().map { [UInt8]($0) }
+            return try engine.handleTimeoutBytes()
         } catch {
             throw TLSError.fromDTLS(error)
         }

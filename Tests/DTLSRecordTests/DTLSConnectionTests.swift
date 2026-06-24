@@ -1,6 +1,8 @@
 /// Tests for DTLSConnection end-to-end handshake and application data
 
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import DTLSRecord

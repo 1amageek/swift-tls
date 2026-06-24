@@ -7,6 +7,7 @@
 /// - Operations fail after close()
 
 import Testing
+import TLSWireCore
 import Foundation
 @testable import DTLSRecord
 @testable import DTLSCore

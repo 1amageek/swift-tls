@@ -13,6 +13,7 @@
 /// the core via the `DTLSWireCore` `ByteReader` / `ByteWriter` cursors.
 
 import Foundation
+import DTLSWireCore
 import P2PCoreBytes
 import TLSCore
 

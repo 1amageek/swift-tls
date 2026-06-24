@@ -10,6 +10,7 @@
 
 import Foundation
 import TLSCore
+import DTLSWireCore
 import P2PCoreBytes
 
 // MARK: - DTLSVersion (legacy cursor)

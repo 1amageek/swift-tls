@@ -5,6 +5,7 @@
 /// `NewSessionTicket` wire message lives in `TLSWireCore`).
 
 import Foundation
+import TLSWireCore
 import Crypto
 
 // MARK: - Session Ticket Data

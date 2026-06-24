@@ -7,6 +7,7 @@
 ///   so the wire capability matches the real verification capability.
 
 import Testing
+import TLSWireCore
 import Foundation
 @testable import TLSCore
 

@@ -8,7 +8,9 @@
 /// the core codec. No new framing logic lives here.
 
 import Foundation
-@_exported import TLSRecordCore
+// Plain `import` (NOT `@_exported`): the Tier-3 record codec is not re-exported
+// through this engine into the `TLS` facade's namespace (embedded-first-api.md §3.2).
+import TLSRecordCore
 
 // MARK: - TLSRecord (Data convenience init)
 

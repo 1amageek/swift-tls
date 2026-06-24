@@ -7,6 +7,7 @@
 ///   It provides no security and must never be used in production.
 
 import Foundation
+import TLSWireCore
 import Crypto
 import Synchronization
 

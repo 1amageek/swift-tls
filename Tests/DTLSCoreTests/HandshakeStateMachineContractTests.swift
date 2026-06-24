@@ -7,6 +7,8 @@
 /// D. ChangeCipherSpec in wrong state is rejected
 
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import DTLSCore

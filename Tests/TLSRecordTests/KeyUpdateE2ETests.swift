@@ -4,6 +4,7 @@
 /// Verifies key rotation, peer response, bidirectional updates, and error handling.
 
 import Testing
+import TLSRecordCore
 import Foundation
 import Crypto
 

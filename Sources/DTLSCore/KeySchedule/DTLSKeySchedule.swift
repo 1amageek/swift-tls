@@ -14,6 +14,7 @@
 
 import Foundation
 import TLSCore
+import DTLSWireCore
 import DTLSHandshakeCore
 
 /// Key block derived from master secret

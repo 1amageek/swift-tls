@@ -6,6 +6,7 @@
 /// C. Flight lifecycle state transitions are correct
 
 import Testing
+import DTLSWireCore
 import Foundation
 @testable import DTLSCore
 

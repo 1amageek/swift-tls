@@ -9,6 +9,8 @@
 
 import Foundation
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Crypto
 import TLSCore
 @testable import DTLSCore

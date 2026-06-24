@@ -6,6 +6,7 @@
 /// `expectedPeerPublicKey` (raw key bytes).
 
 import Foundation
+import TLSWireCore
 
 /// Validates Raw Public Key certificate payloads against configured trust.
 public enum RawPublicKeyValidator {

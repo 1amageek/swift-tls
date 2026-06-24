@@ -1,6 +1,7 @@
 /// Tests for DTLS 1.2 Key Schedule
 
 import Testing
+import DTLSWireCore
 import Foundation
 @testable import DTLSCore
 

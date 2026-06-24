@@ -1,6 +1,7 @@
 /// X25519MLKEM768 Hybrid Key Exchange Tests (draft-ietf-tls-ecdhe-mlkem)
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

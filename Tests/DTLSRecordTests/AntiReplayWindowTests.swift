@@ -4,6 +4,7 @@
 
 import Testing
 import Foundation
+import DTLSRecordCore
 @testable import DTLSRecord
 
 @Suite("Anti-Replay Window Tests")

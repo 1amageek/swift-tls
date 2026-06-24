@@ -4,6 +4,7 @@
 /// and 0-RTT early data.
 
 import Foundation
+import TLSWireCore
 import Crypto
 import Synchronization
 

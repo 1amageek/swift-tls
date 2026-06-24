@@ -3,6 +3,7 @@
 /// Wrapper around swift-certificates' Certificate type for TLS integration.
 
 import Foundation
+import TLSWireCore
 @preconcurrency import X509
 import SwiftASN1
 

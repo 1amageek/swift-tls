@@ -6,6 +6,7 @@
 /// no call site needs an explicit conversion.
 
 import Foundation
+import TLSWireCore
 import Crypto
 
 extension TLSKeySchedule {

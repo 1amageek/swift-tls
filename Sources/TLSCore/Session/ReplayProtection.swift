@@ -4,6 +4,7 @@
 /// Servers should use this to detect and reject replayed 0-RTT requests.
 
 import Foundation
+import TLSWireCore
 import Synchronization
 import Crypto
 

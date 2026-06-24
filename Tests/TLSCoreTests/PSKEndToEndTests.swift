@@ -13,6 +13,7 @@
 /// - Cipher suite mismatch PSK rejection (fallback to full handshake)
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

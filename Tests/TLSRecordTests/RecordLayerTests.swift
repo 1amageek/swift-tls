@@ -4,6 +4,7 @@
 /// and the integrated record layer.
 
 import Testing
+import TLSRecordCore
 import Foundation
 import Crypto
 

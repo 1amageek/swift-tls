@@ -18,6 +18,7 @@
 import Foundation
 import Crypto
 import TLSCore
+import TLSWireCore
 import P2PCoreBytes
 import P2PCoreCrypto
 

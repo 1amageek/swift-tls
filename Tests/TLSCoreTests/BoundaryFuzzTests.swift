@@ -4,6 +4,7 @@
 /// are rejected gracefully without crashing.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

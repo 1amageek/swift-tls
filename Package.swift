@@ -202,6 +202,10 @@ let package = Package(
                 "TLSCore",
                 "TLSRecord",
                 "TLSCryptoCore",
+                // Tier-3 wire/record cores: the engine no longer @_exports them, so
+                // tests that reference wire types import them explicitly.
+                "TLSWireCore",
+                "TLSRecordCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
             ],
             path: "Tests/TLSCoreTests"
@@ -213,13 +217,17 @@ let package = Package(
                 "TLSRecord",
                 "TLSCore",
                 "TLSRecordCore",
+                "TLSWireCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
             ],
             path: "Tests/TLSRecordTests"
         ),
         .testTarget(
             name: "DTLSCoreTests",
-            dependencies: ["TLS", "DTLSCore", "TLSCore"],
+            dependencies: [
+                "TLS", "DTLSCore", "TLSCore",
+                "TLSWireCore", "DTLSWireCore", "DTLSHandshakeCore", "DTLSRecordCore",
+            ],
             path: "Tests/DTLSCoreTests"
         ),
         .testTarget(
@@ -229,6 +237,8 @@ let package = Package(
                 "DTLSRecord",
                 "DTLSCore",
                 "DTLSRecordCore",
+                "TLSWireCore",
+                "DTLSWireCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
             ],
             path: "Tests/DTLSRecordTests"

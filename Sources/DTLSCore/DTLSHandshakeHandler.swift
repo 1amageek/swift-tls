@@ -31,6 +31,8 @@
 ///   Flight 6: Server → CCS, Finished
 
 import Foundation
+import DTLSWireCore
+import TLSWireCore
 import Crypto
 import Synchronization
 import TLSCore

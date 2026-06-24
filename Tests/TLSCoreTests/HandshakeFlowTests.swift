@@ -3,6 +3,7 @@
 /// Tests the complete TLS 1.3 handshake between client and server.
 
 import Testing
+import TLSWireCore
 import Foundation
 
 @testable import TLSCore

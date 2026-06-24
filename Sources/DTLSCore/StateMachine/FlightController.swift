@@ -6,6 +6,7 @@
 
 import Foundation
 import Synchronization
+import DTLSWireCore
 
 /// DTLS flight identifier
 public enum DTLSFlight: Sendable, Equatable {

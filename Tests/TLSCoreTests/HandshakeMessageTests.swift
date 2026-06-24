@@ -1,6 +1,7 @@
 /// TLS 1.3 Handshake Message Tests
 
 import Testing
+import TLSWireCore
 import Foundation
 @testable import TLSCore
 

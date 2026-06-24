@@ -12,6 +12,7 @@
 /// - Signature algorithms from CertificateRequest
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @preconcurrency import X509

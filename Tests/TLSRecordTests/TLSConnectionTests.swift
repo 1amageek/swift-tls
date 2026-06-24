@@ -3,6 +3,8 @@
 /// Tests the high-level TLSConnection API for TCP consumers.
 
 import Testing
+import TLSRecordCore
+import TLSWireCore
 import Foundation
 import Crypto
 

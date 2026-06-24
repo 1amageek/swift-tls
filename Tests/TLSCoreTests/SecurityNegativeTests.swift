@@ -5,6 +5,8 @@
 /// empty fields, missing extensions, corrupted data, and protocol violations.
 
 import Testing
+import TLSRecordCore
+import TLSWireCore
 import Foundation
 import Crypto
 

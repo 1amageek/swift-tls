@@ -3,6 +3,7 @@
 /// Tests that TLS handshake works without transport parameters and without ALPN.
 
 import Testing
+import TLSWireCore
 import Foundation
 
 @testable import TLSCore

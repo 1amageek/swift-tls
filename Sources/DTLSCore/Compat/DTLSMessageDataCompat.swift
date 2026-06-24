@@ -16,6 +16,8 @@
 import Foundation
 import P2PCoreBytes
 import TLSCore
+import TLSWireCore
+import DTLSWireCore
 
 // MARK: - DTLSClientHello
 

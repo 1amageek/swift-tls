@@ -23,6 +23,7 @@
 /// has elapsed since the current secret was generated.
 
 import Foundation
+import DTLSWireCore
 import Crypto
 import Synchronization
 import TLSCore

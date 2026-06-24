@@ -5,6 +5,7 @@
 /// and mocking for tests.
 
 import Foundation
+import TLSWireCore
 
 // MARK: - TLS Handshake Provider Protocol
 

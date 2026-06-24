@@ -5,7 +5,10 @@
 
 import Foundation
 import Crypto
+import TLSCore
 import DTLSCore
+import DTLSWireCore
+import DTLSRecordCore
 
 /// An established DTLS session for encrypting/decrypting application data
 public struct DTLSSession: Sendable {

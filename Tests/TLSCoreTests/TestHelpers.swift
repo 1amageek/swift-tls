@@ -4,6 +4,7 @@
 /// all TLS test files.
 
 import Foundation
+import TLSWireCore
 import Crypto
 
 @testable import TLSCore

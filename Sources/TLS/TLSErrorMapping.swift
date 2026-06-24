@@ -8,6 +8,8 @@
 
 import TLSCore
 import TLSRecord
+import TLSWireCore
+import TLSRecordCore
 
 extension TLSError {
     /// Folds any engine error thrown by the TLS byte-stream engine into `TLSError`.

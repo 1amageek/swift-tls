@@ -5,6 +5,8 @@
 /// and maximum plaintext size enforcement.
 
 import Testing
+import TLSRecordCore
+import TLSWireCore
 import Foundation
 import Crypto
 

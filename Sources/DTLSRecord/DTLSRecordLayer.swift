@@ -13,7 +13,10 @@
 import Foundation
 import Synchronization
 import Crypto
+import TLSCore
 import DTLSCore
+import DTLSWireCore
+import DTLSRecordCore
 
 /// DTLS record layer managing epoch/sequence and encryption state
 public final class DTLSRecordLayer: Sendable {

@@ -9,8 +9,11 @@
 
 import Foundation
 import P2PCoreBytes
-@_exported import TLSCore
-@_exported import DTLSWireCore
+// Plain `import` (NOT `@_exported`): neither the `TLSCore` engine nor the Tier-3
+// `DTLSWire` wire codec is re-exported through this engine into the `TLS` facade's
+// namespace (embedded-first-api.md §3.2). Files here import what they use.
+import TLSCore
+import DTLSWireCore
 
 // MARK: - Disambiguation
 

@@ -13,6 +13,7 @@
 /// no valid fallback for an unencodable message.
 
 import Foundation
+import TLSWireCore
 import P2PCoreBytes
 
 // MARK: - Encode helper

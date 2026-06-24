@@ -5,6 +5,7 @@
 /// record layer writes in TLSRecordLayer.
 
 import Testing
+import TLSRecordCore
 import Foundation
 import Crypto
 

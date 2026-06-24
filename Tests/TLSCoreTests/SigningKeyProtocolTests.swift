@@ -4,6 +4,7 @@
 /// with the existing SigningKey/VerificationKey enums and custom implementations.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 

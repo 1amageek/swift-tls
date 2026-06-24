@@ -6,6 +6,7 @@
 /// request a new ClientHello with a different group.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 

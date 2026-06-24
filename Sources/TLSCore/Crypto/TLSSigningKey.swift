@@ -5,6 +5,7 @@
 /// Consumers can provide custom implementations for RSA, HSM, or post-quantum keys.
 
 import Foundation
+import TLSWireCore
 
 /// Protocol for signing keys used in TLS CertificateVerify.
 ///

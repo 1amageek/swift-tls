@@ -3,6 +3,7 @@
 /// Supports ECDSA with P-256/P-384 and Ed25519.
 
 import Foundation
+import TLSWireCore
 import Crypto
 import P2PCoreBytes
 

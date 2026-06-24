@@ -13,6 +13,8 @@
 import Foundation
 import Synchronization
 import TLSCore
+import TLSWireCore
+import TLSRecordCore
 
 // MARK: - TLS Connection Output
 

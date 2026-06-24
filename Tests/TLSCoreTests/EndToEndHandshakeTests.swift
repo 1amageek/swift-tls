@@ -5,6 +5,7 @@
 /// derive consistent keys, negotiate ALPN, and exchange transport parameters.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 

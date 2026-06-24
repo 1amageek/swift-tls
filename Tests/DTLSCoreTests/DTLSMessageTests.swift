@@ -1,6 +1,8 @@
 /// Tests for DTLS 1.2 message encoding/decoding
 
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Foundation
 @testable import DTLSCore
 import TLSCore

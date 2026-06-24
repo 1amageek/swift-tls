@@ -6,6 +6,8 @@
 /// `DTLSError`), so callers and the existing test suite catch `DTLSError` directly.
 
 import TLSCore
+import TLSWireCore
+import DTLSWireCore
 
 extension SignatureScheme {
     /// Hash algorithm byte for TLS 1.2 signature.

@@ -1,6 +1,7 @@
 /// TLS 1.3 Key Exchange Tests
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

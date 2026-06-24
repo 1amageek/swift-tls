@@ -7,6 +7,8 @@
 
 import Foundation
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import TLSCore
 @testable import DTLSCore
 

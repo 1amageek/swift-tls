@@ -4,6 +4,8 @@
 /// and post-encryption rejection of plaintext records (RFC 8446 Section 5).
 
 import Testing
+import TLSRecordCore
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSRecord

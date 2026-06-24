@@ -10,6 +10,7 @@
 /// - Session ticket creation and usage
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

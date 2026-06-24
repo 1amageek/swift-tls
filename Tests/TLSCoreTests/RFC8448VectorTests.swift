@@ -5,6 +5,7 @@
 /// and structural properties defined by the RFC.
 
 import Testing
+import TLSWireCore
 import Foundation
 import Crypto
 @testable import TLSCore

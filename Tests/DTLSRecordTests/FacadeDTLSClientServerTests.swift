@@ -7,6 +7,8 @@
 /// unchanged in their own files; this proves the facade drives the same engine.
 
 import Testing
+import DTLSWireCore
+import TLSWireCore
 import Foundation
 import Crypto
 

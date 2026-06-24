@@ -24,6 +24,7 @@
 
 import Foundation
 import Crypto
+import TLSCore
 import DTLSCore
 import DTLSRecordCore
 

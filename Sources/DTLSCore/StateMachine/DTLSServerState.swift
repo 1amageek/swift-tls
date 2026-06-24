@@ -5,6 +5,7 @@
 ///   → waitingChangeCipherSpec → waitingFinished → connected
 
 import Foundation
+import DTLSWireCore
 import TLSCore
 import DTLSHandshakeCore
 
