@@ -11,7 +11,13 @@
 /// They are kept byte-identical to the legacy path: a signing failure throws
 /// ``P2PCoreCrypto/CryptoError/providerFailure``; an invalid signature is an
 /// explicit `false` from `isValid` (no silent fallback).
+///
+/// Host-only (`#if !hasFeature(Embedded)`): swift-crypto's `derRepresentation`
+/// supplies the DER encoding. The Embedded build uses ``EmbeddedDERP256Signature``
+/// / ``EmbeddedDERP384Signature`` (BoringSSL raw `r || s` + a `P2PCoreDER` DER
+/// wrapper that is byte-identical to this path).
 
+#if !hasFeature(Embedded)
 import Foundation
 import Crypto
 import P2PCoreBytes
@@ -175,3 +181,5 @@ public enum TLSDERP384Signature: P2PCoreCrypto.SignatureScheme {
         }
     }
 }
+
+#endif // !hasFeature(Embedded)

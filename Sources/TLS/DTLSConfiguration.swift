@@ -3,7 +3,11 @@
 /// DTLS in this stack authenticates with an ECDSA P-256 certificate (WebRTC /
 /// libp2p convention). The identity carries the DER leaf certificate plus the
 /// raw 32-byte P-256 private key.
+import TLSCryptoProvider
+import DTLSEngineCore
+#if !hasFeature(Embedded)
 import DTLSCore
+#endif
 
 public struct DTLSConfiguration: Sendable {
     /// The local DTLS identity (ECDSA P-256 certificate + raw private key).
@@ -18,7 +22,10 @@ public struct DTLSConfiguration: Sendable {
         self.identity = identity
         self.requireClientCertificate = requireClientCertificate
     }
+}
 
+#if !hasFeature(Embedded)
+extension DTLSConfiguration {
     /// Build the engine `DTLSCertificate`. Throws `TLSError` for malformed
     /// material or a non-P256 key (no silent fallback).
     func makeCertificate() throws(TLSError) -> DTLSCertificate {
@@ -34,4 +41,13 @@ public struct DTLSConfiguration: Sendable {
             throw .invalidConfiguration(reason: "invalid DTLS certificate: \(error)")
         }
     }
+
+    /// Build the cored DTLS engine configuration (HOST swift-crypto / X.509 strategy).
+    func makeDTLSEngineConfiguration() throws(TLSError) -> DTLSEngineConfiguration<TLSCryptoProvider> {
+        let certificate = try makeCertificate()
+        return certificate.makeDTLSEngineConfiguration(
+            requireClientCertificate: requireClientCertificate
+        )
+    }
 }
+#endif // !hasFeature(Embedded)

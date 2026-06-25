@@ -14,6 +14,62 @@ let coreSettings: [SwiftSetting] = {
     return s
 }()
 
+// The unified `TLSCryptoProvider` target's dependencies. On host it adds the
+// swift-crypto `Crypto` product (the `#else` DER-ECDSA path uses `derRepresentation`);
+// under Embedded that path is `#if`-excluded and the BoringSSL backend + `P2PCoreDER`
+// supply the DER encoding, so `Crypto` is dropped to keep the Embedded build free of
+// the non-Embedded swift-crypto module. This mirrors the `P2PCrypto` umbrella's own
+// conditional backend dependency.
+let cryptoProviderDependencies: [Target.Dependency] = {
+    var d: [Target.Dependency] = [
+        .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
+        .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+        .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+        .product(name: "P2PCoreDER", package: "swift-p2p-core"),
+    ]
+    if !embeddedEnabled {
+        d.append(.product(name: "Crypto", package: "swift-crypto"))
+    }
+    return d
+}()
+
+// The Tier-1 facade's dependencies. The cored Embedded-clean engines + the unified
+// provider + the Embedded cert/sign strategy are present in BOTH builds. The host
+// strategy bridges (X.509 + signing) live in TLSCore / DTLSCore / TLSRecord /
+// DTLSRecord (Foundation/swift-crypto/X509-bound); they are dropped under Embedded,
+// where the facade uses the `P2PCoreDER` raw-public-key strategy instead
+// (`#if canImport(Foundation)` gates the source accordingly).
+let facadeDependencies: [Target.Dependency] = {
+    var d: [Target.Dependency] = [
+        "TLSEngineCore",
+        "DTLSEngineCore",
+        "TLSCryptoProvider",
+        // The Embedded cert/sign strategy specialises these cores at the provider.
+        "TLSCryptoCore",
+        "DTLSHandshakeCore",
+        "TLSWireCore",
+        "DTLSWireCore",
+        .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+        .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+        .product(name: "P2PCoreDER", package: "swift-p2p-core"),
+    ]
+    if !embeddedEnabled {
+        d += [
+            // Host strategy bridges (X.509 trust + signing for TLS; ECDHE +
+            // sign/verify + cookie HMAC for DTLS) live in TLSCore / DTLSCore,
+            // gated `#if canImport(Foundation)`.
+            "TLSCore",
+            "DTLSCore",
+            // TLSRecord is retained only for the legacy error mapping.
+            "TLSRecord",
+            // DTLSRecord is retained as the package legacy host engine for the
+            // DTLSRecord-level security tests; the facade no longer wraps it.
+            "DTLSRecord",
+        ]
+    }
+    return d
+}()
+
 let package = Package(
     name: "swift-tls",
     platforms: [
@@ -172,6 +228,20 @@ let package = Package(
             path: "Sources/DTLSEngineCore",
             swiftSettings: coreSettings
         ),
+        // ---- Unified crypto provider (dual-build: host + Embedded) ----
+        // The SINGLE place that imports `P2PCrypto`. `TLSCryptoProvider` = the
+        // shared `DefaultCryptoProvider` for every primitive EXCEPT the two ECDSA
+        // signature schemes, which are DER-encoded for the TLS 1.3 CertificateVerify
+        // wire (RFC 8446 §4.2.3). The DER override is dual-built: host uses
+        // `TLSDERP256/384Signature` (swift-crypto `derRepresentation`); Embedded uses
+        // `EmbeddedDERP256/384Signature` (BoringSSL raw `r||s` + a `P2PCoreDER` DER
+        // wrapper, byte-identical to the host output). Embedded-clean.
+        .target(
+            name: "TLSCryptoProvider",
+            dependencies: cryptoProviderDependencies,
+            path: "Sources/TLSCryptoProvider",
+            swiftSettings: coreSettings
+        ),
         // ---- Host engine: TLS 1.3 handshake + crypto/X509 (package-visible) ----
         .target(
             name: "TLSCore",
@@ -183,12 +253,13 @@ let package = Package(
                 // HOST strategy bridge (X.509 trust + signing) that fills the
                 // engine's injected seams (`#if canImport(Foundation)`).
                 "TLSEngineCore",
+                // Unified provider: `TLSCryptoProvider` (the shared
+                // `DefaultCryptoProvider` + DER-ECDSA override) now lives in its own
+                // Embedded-clean target. The host adapter imports it to specialise
+                // every generic engine at it.
+                "TLSCryptoProvider",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
-                // Unified provider: the host adapter specialises every generic
-                // engine at the local `TLSCryptoProvider` composite (= shared
-                // `DefaultCryptoProvider` + DER-ECDSA override), replacing the
-                // deleted standalone `TLSProvider` aggregate.
                 .product(name: "P2PCrypto", package: "swift-p2p-crypto"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "X509", package: "swift-certificates"),
@@ -237,25 +308,17 @@ let package = Package(
         // ---- Tier-1 facade: TLSClient/TLSServer/DTLSClient/DTLSServer ----
         // The only public-facing module a normal user imports. Non-generic, fixed
         // to DefaultCryptoProvider, [UInt8]/Span<UInt8> currency, one TLSError.
+        // ---- Tier-1 facade: TLSClient/TLSServer/DTLSClient/DTLSServer ----
+        // The only public-facing module a normal user imports. Non-generic, fixed to
+        // `TLSCryptoProvider`, [UInt8]/Span<UInt8> currency, one TLSError.
+        // Dual-build: on host the X.509 strategy bridges (TLSCore/DTLSCore) fill the
+        // engine seams; under Embedded the facade uses the `P2PCoreDER` raw-public-key
+        // strategy and never imports the host X509/Foundation code.
         .target(
             name: "TLS",
-            dependencies: [
-                // The cored Embedded-clean engines the TLS (TCP) + DTLS (UDP) facades
-                // drive.
-                "TLSEngineCore",
-                "DTLSEngineCore",
-                // Host strategy bridges (X.509 trust + signing for TLS; ECDHE +
-                // sign/verify + cookie HMAC for DTLS) live in TLSCore / DTLSCore,
-                // gated `#if canImport(Foundation)`.
-                "TLSCore",
-                "DTLSCore",
-                // TLSRecord is retained only for the legacy error mapping.
-                "TLSRecord",
-                // DTLSRecord is retained as the package legacy host engine for the
-                // DTLSRecord-level security tests; the facade no longer wraps it.
-                "DTLSRecord",
-            ],
-            path: "Sources/TLS"
+            dependencies: facadeDependencies,
+            path: "Sources/TLS",
+            swiftSettings: coreSettings
         ),
         .testTarget(
             name: "TLSCoreTests",
@@ -264,6 +327,7 @@ let package = Package(
                 "TLSCore",
                 "TLSRecord",
                 "TLSCryptoCore",
+                "TLSCryptoProvider",
                 // Tier-3 wire/record cores: the engine no longer @_exports them, so
                 // tests that reference wire types import them explicitly.
                 "TLSWireCore",

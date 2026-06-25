@@ -7,27 +7,31 @@
 /// and the monotonic clock — bringing the shared provider's bulk-copy primitives.
 /// This is UNIFORM with swift-quic's `QUICCryptoProvider`.
 ///
-/// The ONE exception is ECDSA: the shared `FoundationCryptoProvider` emits ECDSA
-/// signatures in *raw* `r||s` form (correct for Noise/libp2p), whereas the TLS 1.3
-/// CertificateVerify wire format (RFC 8446 §4.2.3) requires *DER*. Emitting raw
-/// ECDSA on the TLS wire would silently break interop and is caught by the
-/// signature seam differential tests. This composite therefore overrides
-/// `P256Signature`/`P384Signature` with the DER schemes (``TLSDERP256Signature`` /
-/// ``TLSDERP384Signature``) and inherits everything else from the shared provider —
+/// The ONE exception is ECDSA: the shared provider emits ECDSA signatures in *raw*
+/// `r || s` form (correct for Noise/libp2p), whereas the TLS 1.3 CertificateVerify
+/// wire format (RFC 8446 §4.2.3) requires *DER*. Emitting raw ECDSA on the TLS wire
+/// would silently break interop and is caught by the signature seam differential
+/// tests. This composite therefore overrides `P256Signature`/`P384Signature` with
+/// the DER schemes and inherits everything else from the shared provider —
 /// preserving the CertificateVerify bytes byte-identically while still unifying the
 /// rest of the crypto surface.
 ///
-/// This replaces the former standalone `TLSProvider` aggregate (and its now-redundant
-/// non-signature primitive wrappers, which the shared provider supplies): there is
-/// one provider type in swift-tls, and it specialises the cores at a single `C`.
+/// The DER-ECDSA override is dual-built:
+///   - host (`#else`): ``TLSDERP256Signature`` / ``TLSDERP384Signature`` over
+///     swift-crypto's `derRepresentation`.
+///   - Embedded (`#if hasFeature(Embedded)`): ``EmbeddedDERP256Signature`` /
+///     ``EmbeddedDERP384Signature`` over the BoringSSL raw `r || s` schemes, with a
+///     `P2PCoreDER` DER wrapper that is byte-identical to the host output.
+///
+/// This target is the SINGLE place in swift-tls that imports `P2PCrypto`; it is the
+/// one provider type the swift-tls cores specialise at.
 
 import P2PCrypto
 import P2PCoreCrypto
 // The concrete primitive types behind `DefaultCryptoProvider`'s associated types
 // live in the backend module; importing it makes them nameable in the typealiases
 // below. Mirror `DefaultCryptoProvider`'s own backend selection so this composite
-// resolves to the same backend in each build (TLSCore is the host adapter, so in
-// practice this is always the Foundation branch).
+// resolves to the same backend in each build.
 #if hasFeature(Embedded)
 import P2PCryptoEmbedded
 #else
@@ -64,8 +68,13 @@ public enum TLSCryptoProvider: CryptoProvider {
     // Signatures — Ed25519 inherited (raw 64-byte, identical wire form);
     // ECDSA OVERRIDDEN to DER for the TLS CertificateVerify wire (RFC 8446 §4.2.3).
     public typealias Ed25519       = DefaultCryptoProvider.Ed25519
+    #if hasFeature(Embedded)
+    public typealias P256Signature = EmbeddedDERP256Signature
+    public typealias P384Signature = EmbeddedDERP384Signature
+    #else
     public typealias P256Signature = TLSDERP256Signature
     public typealias P384Signature = TLSDERP384Signature
+    #endif
 
     // Ambient capabilities — inherited.
     public typealias Random           = DefaultCryptoProvider.Random

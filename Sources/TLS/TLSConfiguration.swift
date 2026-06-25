@@ -4,7 +4,9 @@
 /// swift-crypto types. It is translated into the engine configuration at the
 /// boundary; the engine remains the single source of TLS behaviour.
 
+#if !hasFeature(Embedded)
 import TLSCore
+#endif
 
 public struct TLSConfiguration: Sendable {
     /// Server name for SNI (client only).

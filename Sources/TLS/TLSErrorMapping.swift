@@ -1,21 +1,20 @@
 /// Maps the engine-level error types onto the single public `TLSError`.
 ///
-/// The record/handshake engines (`TLSConnection`, `TLS13Handler`, and their
-/// underlying codec cores) throw a family of implementation-level error enums.
-/// The facade catches them at its boundary and folds them into `TLSError` so the
-/// public surface has exactly one error type. Unknown errors are surfaced as
-/// `.internalError` with a description — never silently swallowed.
+/// The cored TLS engine (`TLSEngineCore.TLSEngineError`) is folded into `TLSError`
+/// in BOTH builds (`fromEngine`, Embedded-clean). The HOST build additionally folds
+/// the legacy record/handshake engine errors (`TLSConnectionError`, `TLSRecordError`,
+/// `TLSCore.TLSError`, …) for the host-only record-level tests; that mapping is
+/// gated `#if !hasFeature(Embedded)` because it names Foundation/swift-crypto-bound
+/// types and uses an `any Error` switch. Unknown errors surface as `.internalError`
+/// with a description — never silently swallowed.
 
-import TLSCore
-import TLSRecord
-import TLSWireCore
-import TLSRecordCore
 import TLSEngineCore
 
 extension TLSError {
     /// Folds the cored engine's typed error onto the facade `TLSError`, preserving
     /// the failure category (verification failures stay verification failures —
     /// never collapsed to a generic protocol error or, worse, success).
+    /// Embedded-clean: typed input, no `any`, no host imports.
     static func fromEngine(_ e: TLSEngineCore.TLSEngineError) -> TLSError {
         switch e {
         case .handshakeNotComplete:
@@ -36,8 +35,17 @@ extension TLSError {
             return .internalError(reason: reason)
         }
     }
+}
 
-    /// Folds any engine error thrown by the TLS byte-stream engine into `TLSError`.
+#if !hasFeature(Embedded)
+import TLSCore
+import TLSRecord
+import TLSWireCore
+import TLSRecordCore
+
+extension TLSError {
+    /// Folds any engine error thrown by the legacy host TLS byte-stream engine into
+    /// `TLSError` (host-only; used by the record-level security tests).
     static func from(_ error: any Error) -> TLSError {
         switch error {
         case let e as TLSEngineCore.TLSEngineError:
@@ -94,3 +102,4 @@ extension TLSError {
         }
     }
 }
+#endif // !hasFeature(Embedded)

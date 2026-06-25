@@ -16,59 +16,59 @@
 ///
 /// ECDHE, the ServerKeyExchange-signature verification, and the CertificateVerify
 /// signing are INJECTED into the engine via the host strategy bridge
-/// (`DTLSCertificate.makeDTLSEngineConfiguration`, gated `#if canImport(Foundation)`);
+/// (`DTLSCertificate.makeDTLSEngineConfiguration`, gated `#if !hasFeature(Embedded)`);
 /// X.509 never enters the engine itself.
 
+#if !hasFeature(Embedded)
 import Foundation
-import Synchronization
 import TLSCore
 import DTLSCore
+#endif
+import Synchronization
+import TLSCryptoProvider
 import DTLSEngineCore
 
 public final class DTLSClient: Sendable {
-    private let engine: Mutex<DTLSClientEngine<TLSCryptoProvider>>
+    private let engine: FacadeLock<DTLSClientEngine<TLSCryptoProvider>>
 
     /// Creates a DTLS client with the given configuration.
     public init(configuration: DTLSConfiguration) throws(TLSError) {
-        let certificate = try configuration.makeCertificate()
-        let engineConfig = certificate.makeDTLSEngineConfiguration(
-            requireClientCertificate: configuration.requireClientCertificate
-        )
+        let engineConfig = try configuration.makeDTLSEngineConfiguration()
         let created: DTLSClientEngine<TLSCryptoProvider>
         do {
             created = try DTLSClientEngine<TLSCryptoProvider>(configuration: engineConfig)
         } catch {
             throw TLSError.fromDTLSEngine(error)
         }
-        self.engine = Mutex(created)
+        self.engine = FacadeLock(created)
     }
 
     /// Starts the handshake, returning the ClientHello datagram(s) to send.
     public func startHandshake() throws(TLSError) -> [[UInt8]] {
-        try run { try $0.startHandshake() }
+        try run { (e) throws(DTLSEngineError) in try e.startHandshake() }
     }
 
     /// Feeds a received UDP datagram and returns the aggregate effects.
     public func receive(_ datagram: Span<UInt8>) throws(TLSError) -> DTLSOutput {
         let input = datagram.facadeArray()
-        let output = try run { try $0.receive(input.span) }
+        let output = try run { (e) throws(DTLSEngineError) in try e.receive(input.span) }
         return DTLSOutput(from: output)
     }
 
     /// Encrypts application data and returns the DTLS datagram to send.
     public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
-        return try run { try $0.send(input.span) }
+        return try run { (e) throws(DTLSEngineError) in try e.send(input.span) }
     }
 
     /// Emits a close_notify alert datagram to gracefully terminate.
     public func close() throws(TLSError) -> [UInt8] {
-        try run { try $0.close() }
+        try run { (e) throws(DTLSEngineError) in try e.close() }
     }
 
     /// Datagrams to retransmit on a timeout (DTLS flight retransmission).
     public func handleTimeout() throws(TLSError) -> [[UInt8]] {
-        try run { try $0.handleTimeout() }
+        try run { (e) throws(DTLSEngineError) in try e.handleTimeout() }
     }
 
     /// Whether the handshake is complete and the connection is usable.
@@ -84,27 +84,26 @@ public final class DTLSClient: Sendable {
         engine.withLock { $0.remoteCertificateDER }
     }
 
+    #if !hasFeature(Embedded)
     /// Peer's SHA-256 certificate fingerprint in RFC 8122 / SDP textual form
     /// (e.g. `"sha-256 AB:CD:..."`), used for WebRTC DTLS-SRTP peer
-    /// authentication. `nil` if no peer certificate is available.
+    /// authentication. `nil` if no peer certificate is available. Host-only: the
+    /// SDP fingerprint formatting lives in the swift-crypto-backed `DTLSCore`.
     public var remoteFingerprint: String? {
         guard let der = remoteCertificateDER else { return nil }
         return CertificateFingerprint.fromDER(Data(der)).sdpFormat
     }
+    #endif
 
-    /// Runs an engine operation under the lock, mapping any engine error to the
-    /// single facade `TLSError`. The facade is the caller that locks.
+    /// Runs an engine operation under the lock, mapping the engine error to the
+    /// single facade `TLSError`. The facade is the caller that locks. The engine
+    /// only throws `DTLSEngineError`, so the closure is typed-throws (Embedded-clean).
     private func run<R: Sendable>(
-        _ body: (inout DTLSClientEngine<TLSCryptoProvider>) throws -> R
+        _ body: (inout DTLSClientEngine<TLSCryptoProvider>) throws(DTLSEngineError) -> R
     ) throws(TLSError) -> R {
         let result: Result<R, TLSError> = engine.withLock { engine in
-            do {
-                return .success(try body(&engine))
-            } catch let error as DTLSEngineError {
-                return .failure(TLSError.fromDTLSEngine(error))
-            } catch {
-                return .failure(.internalError(reason: String(describing: error)))
-            }
+            Result { () throws(DTLSEngineError) -> R in try body(&engine) }
+                .mapError(TLSError.fromDTLSEngine)
         }
         switch result {
         case .success(let value): return value

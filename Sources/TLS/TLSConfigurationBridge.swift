@@ -11,10 +11,10 @@
 /// X.509 chain validation is structurally bound to swift-certificates (Foundation,
 /// `X509Certificate.parse`), so this bridge is the HOST-ONLY validation strategy
 /// (embedded-first-api.md §D hard-spot resolution): it is gated by
-/// `#if canImport(Foundation)`. An Embedded build supplies the RFC-7250 raw-public-
+/// `#if !hasFeature(Embedded)`. An Embedded build supplies the RFC-7250 raw-public-
 /// key strategy (`P2PCoreDER`) instead. The `certificateValidator` user hook on
 /// `TLSConfiguration` is preserved by both strategies.
-#if canImport(Foundation)
+#if !hasFeature(Embedded)
 import Foundation
 import TLSCore
 import TLSWireCore
@@ -102,22 +102,4 @@ extension TLSConfiguration {
     }
 }
 
-extension TLSIdentity.KeyType {
-    var engineScheme: SignatureScheme {
-        switch self {
-        case .ecdsaP256: return .ecdsa_secp256r1_sha256
-        case .ecdsaP384: return .ecdsa_secp384r1_sha384
-        case .ed25519:   return .ed25519
-        }
-    }
-}
-
-extension TLSCertificateTypes.CertificateType {
-    var engineType: CertificateType {
-        switch self {
-        case .x509:         return .x509
-        case .rawPublicKey: return .rawPublicKey
-        }
-    }
-}
-#endif // canImport(Foundation)
+#endif // !hasFeature(Embedded)

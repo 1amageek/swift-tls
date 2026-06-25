@@ -8,11 +8,14 @@
 /// host strategy.
 
 import Synchronization
-import TLSCore
+import TLSCryptoProvider
 import TLSEngineCore
+#if !hasFeature(Embedded)
+import TLSCore
+#endif
 
 public final class TLSServer: Sendable {
-    private let engine: Mutex<TLSServerEngine<TLSCryptoProvider>>
+    private let engine: FacadeLock<TLSServerEngine<TLSCryptoProvider>>
 
     /// Creates a TLS server. The configuration must carry identity material.
     public init(configuration: TLSConfiguration) throws(TLSError) {
@@ -23,19 +26,19 @@ public final class TLSServer: Sendable {
         } catch {
             throw TLSError.fromEngine(error)
         }
-        self.engine = Mutex(created)
+        self.engine = FacadeLock(created)
     }
 
     /// Starts the handshake. For a server this returns no bytes until the client's
     /// ClientHello arrives; the return is empty.
     public func startHandshake() async throws(TLSError) -> [UInt8] {
-        try run { try $0.startHandshake() }
+        try run { (e) throws(TLSEngineError) in try e.startHandshake() }
     }
 
     /// Feeds bytes received from the peer and returns the aggregate effects.
     public func receive(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
         let input = bytes.facadeArray()
-        let output = try run { try $0.receive(input.span) }
+        let output = try run { (e) throws(TLSEngineError) in try e.receive(input.span) }
         return TLSOutput(
             bytesToSend: output.bytesToSend,
             applicationData: output.applicationData,
@@ -47,12 +50,12 @@ public final class TLSServer: Sendable {
     /// Encrypts application data and returns the TLS records to send.
     public func send(_ application: Span<UInt8>) async throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
-        return try run { try $0.send(input.span) }
+        return try run { (e) throws(TLSEngineError) in try e.send(input.span) }
     }
 
     /// Emits a close_notify alert (encoded record) to gracefully terminate.
     public func close() async throws(TLSError) -> [UInt8] {
-        try run { try $0.close() }
+        try run { (e) throws(TLSEngineError) in try e.close() }
     }
 
     /// Whether the handshake is complete and the connection is usable.
@@ -83,14 +86,11 @@ public final class TLSServer: Sendable {
     }
 
     private func run<R: Sendable>(
-        _ body: (inout TLSServerEngine<TLSCryptoProvider>) throws -> R
+        _ body: (inout TLSServerEngine<TLSCryptoProvider>) throws(TLSEngineError) -> R
     ) throws(TLSError) -> R {
         let result: Result<R, TLSError> = engine.withLock { engine in
-            do {
-                return .success(try body(&engine))
-            } catch {
-                return .failure(TLSError.from(error))
-            }
+            Result { () throws(TLSEngineError) -> R in try body(&engine) }
+                .mapError(TLSError.fromEngine)
         }
         switch result {
         case .success(let value): return value
