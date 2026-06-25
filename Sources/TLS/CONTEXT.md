@@ -1,4 +1,6 @@
 # swift-tls — CONTEXT
+Scope/role: the TLS/DTLS 1.3/1.2 facade (`Sources/TLS`) plus the cored engines it owns; depended on by libp2p, WebRTC, and peer-connectivity for secure transport.
+Last reviewed: 2026-06-25
 
 Invariants and design intent that the code does not state structurally. Read this
 before changing the facade (`Sources/TLS`) or the engines. The currency is

@@ -1,52 +1,8 @@
 # swift-tls
 
-Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), with a single Tier-1 facade and a cored, Embedded-clean engine underneath.
+Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), with a single Tier-1 facade and a cored, Embedded-clean engine underneath. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
 
-> **API status.** The facade API documented here (`TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`) lives on the **unreleased `embedded` branch** (pending the M8 release). The latest released tag, **`1.3.0`, ships the OLD multi-product API** (`TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` with `TLSConnection` / `DTLSConnection`) and does NOT contain the facade. Pin to the `embedded` branch to use the API below.
-
-## Cryptographic backend
-
-On host, the unified crypto provider is built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certificates](https://github.com/apple/swift-certificates), and [Swift ASN.1](https://github.com/apple/swift-asn1). **Under Embedded Swift, swift-crypto is dropped** and the provider uses a vendored BoringSSL backend (`p2p-boringssl`, via `EmbeddedDERSignature.swift`) for the DER-ECDSA CertificateVerify signatures — its DER output is byte-identical to the host's. So the package depends on BoringSSL only in the Embedded build; the host build does not.
-
-## Modules
-
-| Product | Import | Visibility | Description |
-|---------|--------|------------|-------------|
-| **TLS** | `import TLS` | public | Tier-1 facade — the only module a normal user imports. `TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`. |
-| **TLSWire** | `import TLSWire` | public | Tier-3 pure TLS 1.3 wire codec (target `TLSWireCore`), no crypto, no I/O. |
-| **DTLSWire** | `import DTLSWire` | public | Tier-3 pure DTLS 1.2 wire codec (target `DTLSWireCore`). |
-
-The former public products `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` have been **demoted to `package`-visibility targets** (host legacy / host strategy bridges). They are no longer importable from outside the package. Use the `TLS` facade instead.
-
-## Public API (Tier-1 facade)
-
-`TLSClient`, `TLSServer`, `DTLSClient`, and `DTLSServer` are each a `final class` and `Sendable`. They wrap a value-type, sans-IO engine behind a lock (the facade is "the caller that locks"). The currency is `[UInt8]` / `Span<UInt8>`; `Data` appears only as a host-only convenience (e.g. WebRTC fingerprint formatting).
-
-```swift
-// Construction (typed throws)
-init(configuration: TLSConfiguration) throws(TLSError)    // TLSClient / TLSServer
-init(configuration: DTLSConfiguration) throws(TLSError)   // DTLSClient / DTLSServer
-```
-
-Common methods. **TLS** (`TLSClient` / `TLSServer`) methods are `async`; **DTLS** (`DTLSClient` / `DTLSServer`) methods are synchronous.
-
-| Method | TLS | DTLS |
-|--------|-----|------|
-| `startHandshake()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
-| `receive(_:)` | `async throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
-| `send(_:)` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
-| `close()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
-| `handleTimeout()` | — | `throws(TLSError) -> [[UInt8]]` (flight retransmission) |
-
-`receive(_:)` takes a `Span<UInt8>`. `DTLSServer.receive(_:from:)` additionally takes `from remoteAddress: Span<UInt8>` for the HelloVerifyRequest cookie binding.
-
-Connection state and peer material:
-
-- `var isEstablished: Bool` — handshake complete.
-- TLS: `var negotiatedALPN: String?`, `var peerCertificates: [[UInt8]]?` (DER chain, leaf first), `var peerIdentity: PeerIdentity?` (from the injected validator).
-- DTLS: `var isClosed: Bool`, `var remoteCertificateDER: [UInt8]?`, `var remoteFingerprint: String?` (host-only, RFC 8122 / SDP form for WebRTC DTLS-SRTP).
-
-All errors surface as one closed, typed-throws `TLSError` enum (`handshakeNotComplete`, `connectionClosed`, `protocolFailure`, `fatalAlert`, `verificationFailed`, `invalidConfiguration`, `bufferOverflow`, `concurrentReceiveNotAllowed`, `internalError`).
+> **Release status.** The released `1.3.0` ships the prior API (`TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` with `TLSConnection` / `DTLSConnection`). The Embedded-first API documented here (`TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`) lives on the unreleased `embedded` branch (M8 pending) and is not tagged — pin to the branch to use it.
 
 ## Features
 
@@ -79,19 +35,14 @@ All errors surface as one closed, typed-throws `TLSError` enum (`handshakeNotCom
 - Flight retransmission with exponential backoff (driven by `handleTimeout()`)
 - Certificate fingerprint verification (WebRTC compatible)
 
+### Cryptographic backend
+
+On host, the unified crypto provider is built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certificates](https://github.com/apple/swift-certificates), and [Swift ASN.1](https://github.com/apple/swift-asn1). **Under Embedded Swift, swift-crypto is dropped** and the provider uses a vendored BoringSSL backend (`p2p-boringssl`, via `EmbeddedDERSignature.swift`) for the DER-ECDSA CertificateVerify signatures — its DER output is byte-identical to the host's. So the package depends on BoringSSL only in the Embedded build; the host build does not.
+
 ## Requirements
 
 - Swift tools 6.2+
 - macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+
-
-## Embedded Swift
-
-`--target TLS -c release` compiles under Embedded Swift. The cores (engine / wire / crypto schedule / provider) and the facade are dual-built; under Embedded the facade uses the RFC 7250 raw-public-key strategy (`P2PCoreDER` SPKI extraction, fail-closed) instead of swift-certificates/X.509, and `FacadeLock` replaces `Synchronization.Mutex`.
-
-```bash
-P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swiftly run +6.3.1 \
-    swift build --target TLS -c release
-```
 
 ## Installation
 
@@ -117,7 +68,16 @@ Then depend on the facade product:
 )
 ```
 
-## Usage
+### Embedded Swift
+
+`--target TLS -c release` compiles under Embedded Swift. The cores (engine / wire / crypto schedule / provider) and the facade are dual-built; under Embedded the facade uses the RFC 7250 raw-public-key strategy (`P2PCoreDER` SPKI extraction, fail-closed) instead of swift-certificates/X.509, and `FacadeLock` replaces `Synchronization.Mutex`.
+
+```bash
+P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swiftly run +6.3.1 \
+    swift build --target TLS -c release
+```
+
+## Quick Start
 
 ### TCP client (TLS 1.3)
 
@@ -208,6 +168,46 @@ while !dtls.isEstablished {
 
 `requireClientCertificate: true` makes the server fail the handshake unless the client presents a certificate and proves possession of its private key via a valid CertificateVerify. Peer-authenticated deployments (WebRTC / libp2p) must set this.
 
+## Products
+
+| Product | Import | Visibility | Description |
+|---------|--------|------------|-------------|
+| **TLS** | `import TLS` | public | Tier-1 facade — the only module a normal user imports. `TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`. |
+| **TLSWire** | `import TLSWire` | public | Tier-3 pure TLS 1.3 wire codec (target `TLSWireCore`), no crypto, no I/O. |
+| **DTLSWire** | `import DTLSWire` | public | Tier-3 pure DTLS 1.2 wire codec (target `DTLSWireCore`). |
+
+The former public products `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` have been **demoted to `package`-visibility targets** (host legacy / host strategy bridges). They are no longer importable from outside the package. Use the `TLS` facade instead.
+
+### Public API (Tier-1 facade)
+
+`TLSClient`, `TLSServer`, `DTLSClient`, and `DTLSServer` are each a `final class` and `Sendable`. They wrap a value-type, sans-IO engine behind a lock (the facade is "the caller that locks"). The currency is `[UInt8]` / `Span<UInt8>`; `Data` appears only as a host-only convenience (e.g. WebRTC fingerprint formatting).
+
+```swift
+// Construction (typed throws)
+init(configuration: TLSConfiguration) throws(TLSError)    // TLSClient / TLSServer
+init(configuration: DTLSConfiguration) throws(TLSError)   // DTLSClient / DTLSServer
+```
+
+Common methods. **TLS** (`TLSClient` / `TLSServer`) methods are `async`; **DTLS** (`DTLSClient` / `DTLSServer`) methods are synchronous.
+
+| Method | TLS | DTLS |
+|--------|-----|------|
+| `startHandshake()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
+| `receive(_:)` | `async throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
+| `send(_:)` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `close()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `handleTimeout()` | — | `throws(TLSError) -> [[UInt8]]` (flight retransmission) |
+
+`receive(_:)` takes a `Span<UInt8>`. `DTLSServer.receive(_:from:)` additionally takes `from remoteAddress: Span<UInt8>` for the HelloVerifyRequest cookie binding.
+
+Connection state and peer material:
+
+- `var isEstablished: Bool` — handshake complete.
+- TLS: `var negotiatedALPN: String?`, `var peerCertificates: [[UInt8]]?` (DER chain, leaf first), `var peerIdentity: PeerIdentity?` (from the injected validator).
+- DTLS: `var isClosed: Bool`, `var remoteCertificateDER: [UInt8]?`, `var remoteFingerprint: String?` (host-only, RFC 8122 / SDP form for WebRTC DTLS-SRTP).
+
+All errors surface as one closed, typed-throws `TLSError` enum (`handshakeNotComplete`, `connectionClosed`, `protocolFailure`, `fatalAlert`, `verificationFailed`, `invalidConfiguration`, `bufferOverflow`, `concurrentReceiveNotAllowed`, `internalError`).
+
 ## Architecture
 
 The package is a three-tier stack. Public callers touch only Tier 1.
@@ -263,6 +263,13 @@ Tier 3  WIRE CODECS (public: import TLSWire / DTLSWire)
 | CertificateVerify proof-of-possession always verified | Yes — in-core, independent of `verifyPeer` (§4.4.3) |
 | Fatal alert terminates connection | Yes |
 | Data after close_notify ignored | Yes |
+
+## References
+
+- [RFC 8446 — The Transport Layer Security (TLS) Protocol Version 1.3](https://www.rfc-editor.org/rfc/rfc8446)
+- [RFC 6347 — Datagram Transport Layer Security Version 1.2](https://www.rfc-editor.org/rfc/rfc6347)
+- [RFC 7250 — Using Raw Public Keys in TLS and DTLS](https://www.rfc-editor.org/rfc/rfc7250)
+- [RFC 8122 — Connection-Oriented Media Transport over TLS in SDP](https://www.rfc-editor.org/rfc/rfc8122)
 
 ## License
 
