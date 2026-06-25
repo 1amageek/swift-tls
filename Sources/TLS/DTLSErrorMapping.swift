@@ -1,48 +1,40 @@
-/// Maps the DTLS engine error/anomaly types onto the public `TLSError`/`DTLSOutput`.
+/// Maps the cored DTLS engine error onto the single public `TLSError`.
 ///
-/// The DTLS facade folds `DTLSConnectionError` into the single public `TLSError`,
-/// and translates the engine's `DTLSRecordAnomaly` into `DTLSOutput.Anomaly`.
-/// Nothing is silently swallowed.
+/// The DTLS facade folds `DTLSEngineCore.DTLSEngineError` into the one public
+/// `TLSError` (the same surface the TLS facade uses), so a caller has exactly one
+/// exhaustive `catch`. Nothing is silently swallowed — every verification, cookie,
+/// replay, or protocol failure preserves its category.
 
-import DTLSCore
-import DTLSRecord
+import DTLSEngineCore
 
 extension TLSError {
-    /// Folds a DTLS engine error into `TLSError`.
-    static func fromDTLS(_ error: any Error) -> TLSError {
-        switch error {
-        case let e as DTLSConnectionError:
-            switch e {
-            case .handshakeNotStarted:
-                return .internalError(reason: "DTLS handshake not started")
-            case .handshakeNotComplete:
-                return .handshakeNotComplete
-            case .handshakeAlreadyStarted:
-                return .internalError(reason: "DTLS handshake already started")
-            case .connectionClosed:
-                return .connectionClosed
-            case .fatalProtocolError(let reason):
-                return .protocolFailure(reason: reason)
-            case .concurrentProcessingNotAllowed:
-                return .internalError(reason: "Concurrent DTLS datagram processing is not allowed")
-            }
-        case let e as TLSError:
-            return e
-        default:
-            return .internalError(reason: String(describing: error))
-        }
-    }
-}
-
-extension DTLSOutput.Anomaly {
-    /// Translate an engine record anomaly to the facade anomaly.
-    static func from(_ anomaly: DTLSRecordAnomaly) -> DTLSOutput.Anomaly {
-        switch anomaly {
-        case .authenticationFailed: return .authenticationFailed
-        case .malformed:            return .malformed
-        case .replayed:             return .replayed
-        case .tooOld:               return .tooOld
-        case .malformedAlert:       return .malformedAlert
+    /// Folds the cored DTLS engine's typed error onto the facade `TLSError`,
+    /// preserving the failure category (verification failures stay verification
+    /// failures — never collapsed to a generic protocol error or success).
+    static func fromDTLSEngine(_ e: DTLSEngineError) -> TLSError {
+        switch e {
+        case .handshakeNotStarted:
+            return .internalError(reason: "DTLS handshake not started")
+        case .handshakeNotComplete:
+            return .handshakeNotComplete
+        case .handshakeAlreadyStarted:
+            return .internalError(reason: "DTLS handshake already started")
+        case .connectionClosed:
+            return .connectionClosed
+        case .protocolFailure(let reason):
+            return .protocolFailure(reason: reason)
+        case .fatalAlert(let code, let reason):
+            return .fatalAlert(code: code, reason: reason)
+        case .verificationFailed(let reason):
+            return .verificationFailed(reason: reason)
+        case .invalidConfiguration(let reason):
+            return .invalidConfiguration(reason: reason)
+        case .bufferOverflow:
+            return .bufferOverflow
+        case .maxRetransmissionsExceeded:
+            return .protocolFailure(reason: "DTLS maximum retransmissions exceeded")
+        case .internalError(let reason):
+            return .internalError(reason: reason)
         }
     }
 }

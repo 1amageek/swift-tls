@@ -43,3 +43,31 @@ public struct DTLSOutput: Sendable {
         self.anomalies = anomalies
     }
 }
+
+import DTLSEngineCore
+
+extension DTLSOutput {
+    /// Bridges the cored ``DTLSEngineCore/DTLSEngineOutput`` to the facade output.
+    init(from engine: DTLSEngineOutput) {
+        self.init(
+            datagramsToSend: engine.datagramsToSend,
+            applicationData: engine.applicationData,
+            handshakeComplete: engine.handshakeComplete,
+            peerClosed: engine.peerClosed,
+            anomalies: engine.anomalies.map(DTLSOutput.Anomaly.from)
+        )
+    }
+}
+
+extension DTLSOutput.Anomaly {
+    /// Translate a cored engine record anomaly to the facade anomaly.
+    static func from(_ anomaly: DTLSEngineOutput.Anomaly) -> DTLSOutput.Anomaly {
+        switch anomaly {
+        case .authenticationFailed: return .authenticationFailed
+        case .malformed:            return .malformed
+        case .replayed:             return .replayed
+        case .tooOld:               return .tooOld
+        case .malformedAlert:       return .malformedAlert
+        }
+    }
+}

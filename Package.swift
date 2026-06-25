@@ -151,6 +151,27 @@ let package = Package(
             path: "Sources/TLSEngineCore",
             swiftSettings: coreSettings
         ),
+        // ---- Embedded-clean DTLS 1.2 sans-IO connection engine (dual-build) ----
+        // The cored DTLS orchestrator: drives the DTLS handshake FSMs
+        // (DTLSClientHandshake / DTLSServerHandshake) through the value-type record
+        // layer (epoch + 48-bit seq + anti-replay + AEAD), sans-IO, caller-locked,
+        // generic over `C: CryptoProvider`. ECDHE + ServerKeyExchange/CertificateVerify
+        // signing/verification + the HelloVerifyRequest cookie HMAC are INJECTED as
+        // closures in `DTLSEngineConfiguration<C>` (the facade host strategy fills
+        // them). Embedded-clean: no Foundation/`any`/`Mutex`/`ContinuousClock`/X509.
+        .target(
+            name: "DTLSEngineCore",
+            dependencies: [
+                .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
+                .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
+                "TLSWireCore",
+                "DTLSWireCore",
+                "DTLSHandshakeCore",
+                "DTLSRecordCore",
+            ],
+            path: "Sources/DTLSEngineCore",
+            swiftSettings: coreSettings
+        ),
         // ---- Host engine: TLS 1.3 handshake + crypto/X509 (package-visible) ----
         .target(
             name: "TLSCore",
@@ -192,6 +213,10 @@ let package = Package(
                 "TLSCore",
                 "DTLSWireCore",
                 "DTLSHandshakeCore",
+                // The cored sans-IO DTLS engine the facade drives. DTLSCore provides
+                // the HOST strategy bridge (ECDHE + sign/verify + cookie HMAC) that
+                // fills the engine's injected seams (`#if canImport(Foundation)`).
+                "DTLSEngineCore",
                 .product(name: "P2PCoreBytes", package: "swift-p2p-core"),
                 .product(name: "P2PCoreCrypto", package: "swift-p2p-core"),
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -215,17 +240,20 @@ let package = Package(
         .target(
             name: "TLS",
             dependencies: [
-                // The cored Embedded-clean engines the TLS (TCP) facade drives.
+                // The cored Embedded-clean engines the TLS (TCP) + DTLS (UDP) facades
+                // drive.
                 "TLSEngineCore",
-                // Host strategy bridge (X.509 trust + signing) lives in TLSCore,
+                "DTLSEngineCore",
+                // Host strategy bridges (X.509 trust + signing for TLS; ECDHE +
+                // sign/verify + cookie HMAC for DTLS) live in TLSCore / DTLSCore,
                 // gated `#if canImport(Foundation)`.
                 "TLSCore",
-                // DTLS facade still wraps the host DTLSRecord engine pending the
-                // cored DTLS engine; TLSRecord is retained only for the legacy
-                // error mapping until the DTLS facade is also rewired.
-                "TLSRecord",
-                "DTLSRecord",
                 "DTLSCore",
+                // TLSRecord is retained only for the legacy error mapping.
+                "TLSRecord",
+                // DTLSRecord is retained as the package legacy host engine for the
+                // DTLSRecord-level security tests; the facade no longer wraps it.
+                "DTLSRecord",
             ],
             path: "Sources/TLS"
         ),
