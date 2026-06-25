@@ -134,19 +134,20 @@ try await tcp.send(hello)
 // 2. Feed peer bytes until the handshake completes.
 while !tls.isEstablished {
     let received: [UInt8] = try await tcp.receive()
-    let output = try await received.withSpan { try await tls.receive($0) }
+    let output = try await tls.receive(received.span)
     if !output.bytesToSend.isEmpty { try await tcp.send(output.bytesToSend) }
 }
 
 // 3. Application data.
-let records = try await Array("Hello".utf8).withSpan { try await tls.send($0) }
+let message = Array("Hello".utf8)
+let records = try await tls.send(message.span)
 try await tcp.send(records)
 
 // 4. Graceful close.
 try await tcp.send(try await tls.close())
 ```
 
-`receive(_:)` / `send(_:)` take a `Span<UInt8>`; `withSpan` is shown as the borrow that yields one (use whatever your byte buffer provides — the facade copies the span into an internal `[UInt8]` at the boundary).
+`receive(_:)` / `send(_:)` take a `Span<UInt8>`. Obtain one from the `.span` property of a stable `[UInt8]` (or `Bytes`) binding — the facade copies the span into an internal `[UInt8]` at the boundary, so the borrow only needs to last the call.
 
 ### DTLS 1.2 client (UDP)
 
@@ -170,14 +171,15 @@ for datagram in try dtls.startHandshake() {
 // Process datagrams until the handshake completes.
 while !dtls.isEstablished {
     let received: [UInt8] = try await udp.receive()
-    let output = try received.withSpan { dtls.receive($0) }
+    let output = try dtls.receive(received.span)
     for datagram in output.datagramsToSend { try await udp.send(datagram) }
     // On a flight timeout, retransmit:
     //   for datagram in try dtls.handleTimeout() { try await udp.send(datagram) }
 }
 
 // Application data.
-let datagram = try Array("Hello".utf8).withSpan { dtls.send($0) }
+let message = Array("Hello".utf8)
+let datagram = try dtls.send(message.span)
 try await udp.send(datagram)
 
 // Graceful close.
@@ -197,11 +199,8 @@ _ = try dtls.startHandshake()
 
 while !dtls.isEstablished {
     let (data, clientAddr): ([UInt8], [UInt8]) = try await udp.receiveFrom()
-    let output = try data.withSpan { datagram in
-        clientAddr.withSpan { addr in
-            try dtls.receive(datagram, from: addr)   // remoteAddress binds the cookie
-        }
-    }
+    // remoteAddress binds the HelloVerifyRequest cookie.
+    let output = try dtls.receive(data.span, from: clientAddr.span)
     for datagram in output.datagramsToSend { try await udp.send(datagram, to: clientAddr) }
 }
 // Now ready for application data.
