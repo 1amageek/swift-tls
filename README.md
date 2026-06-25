@@ -1,17 +1,52 @@
 # swift-tls
 
-Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)).
+Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), with a single Tier-1 facade and a cored, Embedded-clean engine underneath.
 
-Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certificates](https://github.com/apple/swift-certificates), and [Swift ASN.1](https://github.com/apple/swift-asn1) — no dependency on BoringSSL or OpenSSL.
+> **API status.** The facade API documented here (`TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`) lives on the **unreleased `embedded` branch** (pending the M8 release). The latest released tag, **`1.3.0`, ships the OLD multi-product API** (`TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` with `TLSConnection` / `DTLSConnection`) and does NOT contain the facade. Pin to the `embedded` branch to use the API below.
+
+## Cryptographic backend
+
+On host, the unified crypto provider is built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certificates](https://github.com/apple/swift-certificates), and [Swift ASN.1](https://github.com/apple/swift-asn1). **Under Embedded Swift, swift-crypto is dropped** and the provider uses a vendored BoringSSL backend (`p2p-boringssl`, via `EmbeddedDERSignature.swift`) for the DER-ECDSA CertificateVerify signatures — its DER output is byte-identical to the host's. So the package depends on BoringSSL only in the Embedded build; the host build does not.
 
 ## Modules
 
-| Module | Description |
-|--------|-------------|
-| **TLSCore** | TLS 1.3 handshake state machine, key schedule, X.509 validation, extensions |
-| **TLSRecord** | TLS 1.3 record layer framing, AEAD encryption, `TLSConnection` high-level API |
-| **DTLSCore** | DTLS 1.2 handshake handler, flight controller, cookie exchange |
-| **DTLSRecord** | DTLS 1.2 record layer, anti-replay protection, `DTLSConnection` high-level API |
+| Product | Import | Visibility | Description |
+|---------|--------|------------|-------------|
+| **TLS** | `import TLS` | public | Tier-1 facade — the only module a normal user imports. `TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`. |
+| **TLSWire** | `import TLSWire` | public | Tier-3 pure TLS 1.3 wire codec (target `TLSWireCore`), no crypto, no I/O. |
+| **DTLSWire** | `import DTLSWire` | public | Tier-3 pure DTLS 1.2 wire codec (target `DTLSWireCore`). |
+
+The former public products `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` have been **demoted to `package`-visibility targets** (host legacy / host strategy bridges). They are no longer importable from outside the package. Use the `TLS` facade instead.
+
+## Public API (Tier-1 facade)
+
+`TLSClient`, `TLSServer`, `DTLSClient`, and `DTLSServer` are each a `final class` and `Sendable`. They wrap a value-type, sans-IO engine behind a lock (the facade is "the caller that locks"). The currency is `[UInt8]` / `Span<UInt8>`; `Data` appears only as a host-only convenience (e.g. WebRTC fingerprint formatting).
+
+```swift
+// Construction (typed throws)
+init(configuration: TLSConfiguration) throws(TLSError)    // TLSClient / TLSServer
+init(configuration: DTLSConfiguration) throws(TLSError)   // DTLSClient / DTLSServer
+```
+
+Common methods. **TLS** (`TLSClient` / `TLSServer`) methods are `async`; **DTLS** (`DTLSClient` / `DTLSServer`) methods are synchronous.
+
+| Method | TLS | DTLS |
+|--------|-----|------|
+| `startHandshake()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
+| `receive(_:)` | `async throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
+| `send(_:)` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `close()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `handleTimeout()` | — | `throws(TLSError) -> [[UInt8]]` (flight retransmission) |
+
+`receive(_:)` takes a `Span<UInt8>`. `DTLSServer.receive(_:from:)` additionally takes `from remoteAddress: Span<UInt8>` for the HelloVerifyRequest cookie binding.
+
+Connection state and peer material:
+
+- `var isEstablished: Bool` — handshake complete.
+- TLS: `var negotiatedALPN: String?`, `var peerCertificates: [[UInt8]]?` (DER chain, leaf first), `var peerIdentity: PeerIdentity?` (from the injected validator).
+- DTLS: `var isClosed: Bool`, `var remoteCertificateDER: [UInt8]?`, `var remoteFingerprint: String?` (host-only, RFC 8122 / SDP form for WebRTC DTLS-SRTP).
+
+All errors surface as one closed, typed-throws `TLSError` enum (`handshakeNotComplete`, `connectionClosed`, `protocolFailure`, `fatalAlert`, `verificationFailed`, `invalidConfiguration`, `bufferOverflow`, `concurrentReceiveNotAllowed`, `internalError`).
 
 ## Features
 
@@ -23,234 +58,188 @@ Built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certifica
 - HelloRetryRequest
 - PSK / session resumption with 0-RTT early data
 - Mutual TLS (mTLS)
-- The client always verifies the peer's CertificateVerify signature (proof of possession); the `verifyPeer` configuration flag controls **only** X.509 chain / trust-anchor validation, never the handshake signature
-- X.509 certificate chain validation
-- Signature schemes: ECDSA P-256 / P-384 and Ed25519 only — RSA is not advertised or verified (no RSA verifier is implemented)
+- The CertificateVerify proof-of-possession signature is **always verified** in the core whenever the peer presents a certificate; the `verifyPeer` configuration flag controls **only** X.509 chain / trust-anchor (or RFC 7250 raw-key) validation, never the handshake signature
+- X.509 certificate chain validation (host) and RFC 7250 raw-public-key authentication (host + Embedded)
+- Signature schemes: ECDSA P-256 / P-384 and Ed25519 only — RSA is not advertised or verified
 - Key Update
-- Transport-agnostic design (TCP, QUIC, etc.)
-- `TLSConnection` and `TLSRecordLayer` accept `DataProtocol` input, which lets adapters feed `ByteBufferView` and similar byte collections without pre-converting to `Data`
-- Swift 6 strict concurrency (`Sendable`, `Mutex`)
+- Transport-agnostic, sans-IO design (TCP, QUIC, etc.)
+- `Span<UInt8>` input lets adapters feed byte views without pre-materializing `Data`
+- Swift 6 strict concurrency (`Sendable`, lock-based facade)
 
 ### DTLS 1.2
 
 - Full DTLS 1.2 handshake (client and server)
 - Cipher suite: `ECDHE-ECDSA-AES128-GCM-SHA256`
-- Mutual authentication: the server can require and verify a client certificate via `DTLSConnection(certificate:requireClientCertificate:)`; the client's CertificateVerify proof-of-possession is verified before the handshake completes
-- Cookie exchange for DoS protection (RFC 6347 §4.2.1); HelloVerifyRequest cookies are bound to the originating ClientHello and minted/verified with a rotating secret
+- Mutual authentication: the server requires/verifies a client certificate via `DTLSConfiguration(identity:requireClientCertificate:)`; the client's CertificateVerify proof-of-possession is verified before completion
+- Cookie exchange for DoS protection (RFC 6347 §4.2.1); HelloVerifyRequest cookies are bound to the client transport address and minted/verified with a rotating secret (fail-closed)
 - Anti-replay protection with 64-bit sliding window (RFC 6347 §4.1.2.6); bad-MAC records are discarded while datagram processing continues
-- Non-fatal record anomalies (bad MAC, replay, too-old, malformed) are surfaced via `DTLSConnectionOutput.anomalies` instead of being silently swallowed
-- Handshake fragment reassembly is bounded (per-message and concurrent-message limits) to resist memory-exhaustion DoS
-- Epoch-based key management
-- Flight retransmission with exponential backoff
+- Non-fatal record anomalies (bad MAC, replay, too-old, malformed) are surfaced via `DTLSOutput.anomalies` instead of being silently swallowed
+- Handshake fragment reassembly is bounded to resist memory-exhaustion DoS
+- Epoch-based key management; epoch/sequence monotonicity
+- Flight retransmission with exponential backoff (driven by `handleTimeout()`)
 - Certificate fingerprint verification (WebRTC compatible)
 
 ## Requirements
 
-- Swift 6.2+
+- Swift tools 6.2+
 - macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+
+
+## Embedded Swift
+
+`--target TLS -c release` compiles under Embedded Swift. The cores (engine / wire / crypto schedule / provider) and the facade are dual-built; under Embedded the facade uses the RFC 7250 raw-public-key strategy (`P2PCoreDER` SPKI extraction, fail-closed) instead of swift-certificates/X.509, and `FacadeLock` replaces `Synchronization.Mutex`.
+
+```bash
+P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swiftly run +6.3.1 \
+    swift build --target TLS -c release
+```
 
 ## Installation
 
-Add to your `Package.swift`:
+Add to your `Package.swift` (use the `embedded` branch for the facade API — `1.3.0` ships the old API):
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.0"),
+    .package(url: "https://github.com/1amageek/swift-tls.git", branch: "embedded"),
 ]
 ```
 
-Then add the targets you need:
+Then depend on the facade product:
 
 ```swift
 .target(
     name: "YourTarget",
     dependencies: [
-        // TLS 1.3
-        .product(name: "TLSCore", package: "swift-tls"),
-        .product(name: "TLSRecord", package: "swift-tls"),
-        // DTLS 1.2
-        .product(name: "DTLSCore", package: "swift-tls"),
-        .product(name: "DTLSRecord", package: "swift-tls"),
+        .product(name: "TLS", package: "swift-tls"),
+        // Opt-in pure wire codecs (only if you need to build/parse records yourself):
+        // .product(name: "TLSWire", package: "swift-tls"),
+        // .product(name: "DTLSWire", package: "swift-tls"),
     ]
 )
 ```
 
 ## Usage
 
-### TCP Client
+### TCP client (TLS 1.3)
 
 ```swift
-import TLSRecord
-import TLSCore
+import TLS
 
-// Configure
-var config = TLSConfiguration()
-config.serverName = "example.com"
+var config = TLSConfiguration.client(serverName: "example.com")
+let tls = try TLSClient(configuration: config)
 
-// Create connection
-let tls = TLSConnection(configuration: config)
+// 1. Start the handshake → send the ClientHello.
+let hello = try await tls.startHandshake()
+try await tcp.send(hello)
 
-// Start handshake → send ClientHello over TCP
-let clientHello = try await tls.startHandshake(isClient: true)
-try await tcp.send(clientHello)
-
-// Feed TCP data until handshake completes
-while !tls.isConnected {
-    let received = try await tcp.receive()
-    let output = try await tls.processReceivedData(received)
-    if !output.dataToSend.isEmpty {
-        try await tcp.send(output.dataToSend)
-    }
+// 2. Feed peer bytes until the handshake completes.
+while !tls.isEstablished {
+    let received: [UInt8] = try await tcp.receive()
+    let output = try await received.withSpan { try await tls.receive($0) }
+    if !output.bytesToSend.isEmpty { try await tcp.send(output.bytesToSend) }
 }
 
-// Send/receive application data
-let encrypted = try tls.writeApplicationData(Data("Hello".utf8))
-try await tcp.send(encrypted)
+// 3. Application data.
+let records = try await Array("Hello".utf8).withSpan { try await tls.send($0) }
+try await tcp.send(records)
 
-// Graceful close
-let closeNotify = try tls.close()
-try await tcp.send(closeNotify)
+// 4. Graceful close.
+try await tcp.send(try await tls.close())
 ```
 
-### Byte-Oriented Adapters
+`receive(_:)` / `send(_:)` take a `Span<UInt8>`; `withSpan` is shown as the borrow that yields one (use whatever your byte buffer provides — the facade copies the span into an internal `[UInt8]` at the boundary).
 
-`TLSConnection.processReceivedData(_:)`, `TLSConnection.writeApplicationData(_:)`, and the corresponding `TLSRecordLayer` APIs accept `DataProtocol` input.
-
-That means adapter layers can pass views such as `ByteBuffer.readableBytesView` directly into the TLS stack instead of eagerly materializing a fresh `Data` value first. The TLS record and AEAD boundaries still produce `Data`, but the extra adapter-side copy is no longer required.
-
-### TLSCore Only (for custom transports)
-
-Use `TLS13Handler` directly when integrating with a custom transport like QUIC:
+### DTLS 1.2 client (UDP)
 
 ```swift
-import TLSCore
+import TLS
 
-let handler = TLS13Handler(configuration: config)
-let outputs = try await handler.startHandshake(isClient: true)
+// ECDSA P-256 identity: DER leaf certificate + raw 32-byte private key.
+let identity = TLSIdentity(
+    privateKey: rawP256PrivateKey,                 // [UInt8]
+    keyType: .ecdsaP256,
+    certificateChain: [Certificate(der: leafDER)]
+)
+let config = DTLSConfiguration(identity: identity, requireClientCertificate: true)
+let dtls = try DTLSClient(configuration: config)
 
-for output in outputs {
-    switch output {
-    case .handshakeData(let data, let level):
-        // Send data at the given encryption level
-        try await transport.send(data, at: level)
-    case .keysAvailable(let info):
-        // Install keys for the encryption level
-        transport.installKeys(info)
-    case .handshakeComplete:
-        break
-    default:
-        break
-    }
-}
-```
-
-### DTLS 1.2 Client (UDP)
-
-```swift
-import DTLSRecord
-import DTLSCore
-
-// Create certificate (for client authentication or self-signed)
-let cert = try DTLSCertificate.generateSelfSigned()
-
-// Create connection
-let dtls = DTLSConnection(certificate: cert)
-
-// Start handshake → send ClientHello over UDP
-let clientHello = try dtls.startHandshake(isClient: true)
-for datagram in clientHello {
+// Start the handshake → send the ClientHello datagram(s).
+for datagram in try dtls.startHandshake() {
     try await udp.send(datagram)
 }
 
-// Process UDP datagrams until handshake completes
-while !dtls.isConnected {
-    let received = try await udp.receive()
-    let output = try dtls.processReceivedDatagram(received)
-    for datagram in output.datagramsToSend {
-        try await udp.send(datagram)
-    }
+// Process datagrams until the handshake completes.
+while !dtls.isEstablished {
+    let received: [UInt8] = try await udp.receive()
+    let output = try received.withSpan { dtls.receive($0) }
+    for datagram in output.datagramsToSend { try await udp.send(datagram) }
+    // On a flight timeout, retransmit:
+    //   for datagram in try dtls.handleTimeout() { try await udp.send(datagram) }
 }
 
-// Send/receive application data
-let encrypted = try dtls.writeApplicationData(Data("Hello".utf8))
-try await udp.send(encrypted)
+// Application data.
+let datagram = try Array("Hello".utf8).withSpan { dtls.send($0) }
+try await udp.send(datagram)
 
-// Handle incoming data
-let received = try await udp.receive()
-let output = try dtls.processReceivedDatagram(received)
-print("Received: \(String(data: output.applicationData, encoding: .utf8)!)")
-
-// Graceful close
-let closeNotify = try dtls.close()
-try await udp.send(closeNotify)
+// Graceful close.
+try await udp.send(try dtls.close())
 ```
 
-### DTLS 1.2 Server (UDP)
+### DTLS 1.2 server (UDP)
 
 ```swift
-import DTLSRecord
-import DTLSCore
+import TLS
 
-let cert = try DTLSCertificate.generateSelfSigned()
+let config = DTLSConfiguration(identity: identity, requireClientCertificate: true)
+let dtls = try DTLSServer(configuration: config)
 
-// Require and verify a client certificate (mutual authentication).
-// When `requireClientCertificate` is true, the server fails the handshake unless
-// the client presents a certificate and proves possession of its private key via
-// a valid CertificateVerify. Peer-authenticated deployments (WebRTC / libp2p)
-// must set this to `true`.
-let dtls = DTLSConnection(certificate: cert, requireClientCertificate: true)
+// A server has nothing to send until the first ClientHello arrives.
+_ = try dtls.startHandshake()
 
-// Server waits for ClientHello
-_ = try dtls.startHandshake(isClient: false)
-
-// Process incoming datagrams
-while !dtls.isConnected {
-    let (data, clientAddr) = try await udp.receiveFrom()
-    let output = try dtls.processReceivedDatagram(data, remoteAddress: clientAddr)
-    for datagram in output.datagramsToSend {
-        try await udp.send(datagram, to: clientAddr)
+while !dtls.isEstablished {
+    let (data, clientAddr): ([UInt8], [UInt8]) = try await udp.receiveFrom()
+    let output = try data.withSpan { datagram in
+        clientAddr.withSpan { addr in
+            try dtls.receive(datagram, from: addr)   // remoteAddress binds the cookie
+        }
     }
+    for datagram in output.datagramsToSend { try await udp.send(datagram, to: clientAddr) }
 }
-
-// Now ready for application data
+// Now ready for application data.
 ```
+
+`requireClientCertificate: true` makes the server fail the handshake unless the client presents a certificate and proves possession of its private key via a valid CertificateVerify. Peer-authenticated deployments (WebRTC / libp2p) must set this.
 
 ## Architecture
 
+The package is a three-tier stack. Public callers touch only Tier 1.
+
 ```
-TLSRecord
-├── TLSConnection         High-level API (handshake + record layer)
-├── TLSRecordLayer        Record framing + encryption (external key mgmt)
-├── TLSRecordCodec        Encode/decode TLS record frames
-└── TLSRecordCryptor      AEAD encrypt/decrypt
+Tier 1  FACADE (public: import TLS)
+  TLSClient / TLSServer / DTLSClient / DTLSServer
+    final class & Sendable; holds a value-type engine behind FacadeLock
+    [UInt8]/Span<UInt8> currency; one TLSError; cert validation + signing injected
 
-TLSCore
-├── TLS13Handler          Main handler (coordinates state machines)
-├── StateMachine/
-│   ├── ClientStateMachine
-│   └── HandshakeState
-├── KeySchedule/
-│   ├── TLSKeySchedule    HKDF-based key derivation (RFC 8446 §7)
-│   └── TranscriptHash    Running hash of handshake messages
-├── Messages/             ClientHello, ServerHello, Finished, etc.
-├── Extensions/           SNI, ALPN, KeyShare, PSK, etc.
-├── Crypto/               KeyExchange, Signature
-├── Session/              PSK resumption, replay protection
-└── X509/                 Certificate parsing and chain validation
+Tier 2  ENGINES (package: the cored, sans-IO drivers)
+  TLSEngineCore   : TLSClientEngine<C> / TLSServerEngine<C>
+  DTLSEngineCore  : DTLSClientEngine<C> / DTLSServerEngine<C>
+    value type, caller-locked, sans-IO, generic over C: CryptoProvider
+    drives the handshake FSMs (TLSHandshakeCore / DTLSHandshakeCore) through the
+    record layer; cert-validation + signing are injected via *EngineConfiguration<C>
+    closures (no `any`, no Foundation, no Mutex)
+  TLSCryptoCore   : TLS 1.3 key schedule (HKDF, transcript hash)
+  TLSCryptoProvider (target) : the unified provider —
+    DefaultCryptoProvider for every primitive EXCEPT the two ECDSA signature
+    schemes, which are DER-encoded for the CertificateVerify wire (RFC 8446 §4.2.3);
+    host = swift-crypto derRepresentation, Embedded = BoringSSL r||s + P2PCoreDER
 
-DTLSRecord
-├── DTLSConnection        High-level API (handshake + record layer)
-├── DTLSRecordLayer       Record framing + encryption + anti-replay
-├── DTLSRecordCodec       Encode/decode DTLS record frames
-├── DTLSRecordCryptor     AEAD encrypt/decrypt with explicit nonce
-└── AntiReplayWindow      64-bit sliding window (RFC 6347 §4.1.2.6)
+Tier 3  WIRE CODECS (public: import TLSWire / DTLSWire)
+  TLSWireCore / DTLSWireCore : pure encode/decode over ByteReader/ByteWriter,
+    no crypto, no I/O
 
-DTLSCore
-├── DTLSClientHandshakeHandler   Client-side handshake state machine
-├── DTLSServerHandshakeHandler   Server-side handshake state machine
-├── FlightController             Retransmission with exponential backoff
-├── DTLSCertificate              Self-signed cert generation (P-256)
-└── CertificateFingerprint       SHA-256 fingerprint for WebRTC SDP
+  Host legacy (package, NOT public): TLSCore / TLSRecord / DTLSCore / DTLSRecord
+    host TLSConnection / TLS13Handler / DTLSConnection + state machines, and the
+    host (swift-certificates / swift-crypto) strategy bridges that fill the engine
+    seams under #if !hasFeature(Embedded)
 ```
 
 ## RFC Compliance
@@ -259,21 +248,22 @@ DTLSCore
 
 | Section | Feature | Status |
 |---------|---------|--------|
-| §4.1 | Record layer with epoch/sequence | ✅ |
-| §4.1 | Epoch mismatch handling | ✅ Silent discard |
-| §4.1.2.6 | Anti-replay window (64-bit) | ✅ |
-| §4.1.2.6 | MAC verification before window update | ✅ |
-| §4.1.2.7 | Invalid record handling | ✅ Discarded (datagram continues; surfaced via `anomalies`) |
-| §4.2.1 | Cookie exchange (DoS protection) | ✅ Cookie bound to ClientHello; rotating secret |
-| §4.2.3 | Handshake fragment reassembly | ✅ Bounded (per-message + concurrent limits) |
-| §4.2.4 | Flight retransmission | ✅ Exponential backoff |
+| §4.1 | Record layer with epoch/sequence | Yes |
+| §4.1 | Epoch mismatch handling | Yes — silent discard |
+| §4.1.2.6 | Anti-replay window (64-bit) | Yes |
+| §4.1.2.6 | MAC verification before window update | Yes |
+| §4.1.2.7 | Invalid record handling | Yes — discarded (datagram continues; surfaced via `anomalies`) |
+| §4.2.1 | Cookie exchange (DoS protection) | Yes — cookie bound to client address; rotating secret |
+| §4.2.3 | Handshake fragment reassembly | Yes — bounded (per-message + concurrent limits) |
+| §4.2.4 | Flight retransmission | Yes — exponential backoff |
 
-### TLS 1.2 Alert Protocol (RFC 5246 §7.2)
+### TLS 1.3 (RFC 8446)
 
 | Requirement | Status |
 |-------------|--------|
-| Fatal alert terminates connection | ✅ Immediate return |
-| Data after close_notify ignored | ✅ Immediate return |
+| CertificateVerify proof-of-possession always verified | Yes — in-core, independent of `verifyPeer` (§4.4.3) |
+| Fatal alert terminates connection | Yes |
+| Data after close_notify ignored | Yes |
 
 ## License
 
