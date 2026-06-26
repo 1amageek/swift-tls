@@ -99,8 +99,8 @@ let package = Package(
         // swift-certificates — the stale rejection that previously blocked this is gone.
         // The swift-crypto range below mirrors swift-p2p-crypto/swift-quic so the whole
         // graph agrees on one version.
-        .package(path: "../swift-p2p-core"),
-        .package(path: "../swift-p2p-crypto"),
+        .package(url: "https://github.com/1amageek/swift-p2p-core.git", from: "0.1.0"),
+        .package(url: "https://github.com/1amageek/swift-p2p-crypto.git", from: "0.1.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", "3.12.3"..<"5.0.0"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.17.1"),
         .package(url: "https://github.com/apple/swift-asn1.git", from: "1.5.1"),
@@ -318,6 +318,7 @@ let package = Package(
             name: "TLS",
             dependencies: facadeDependencies,
             path: "Sources/TLS",
+            exclude: ["CONTEXT.md"],
             swiftSettings: coreSettings
         ),
         .testTarget(

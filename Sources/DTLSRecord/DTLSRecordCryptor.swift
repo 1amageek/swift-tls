@@ -57,7 +57,7 @@ public enum DTLSRecordCryptor: Sendable {
                 aad: [UInt8](additionalData)
             )
             return Data(output)
-        } catch let error as DTLSRecordProtectionError {
+        } catch let error {
             throw mapSealError(error)
         }
     }
@@ -82,7 +82,7 @@ public enum DTLSRecordCryptor: Sendable {
                 aad: [UInt8](additionalData)
             )
             return Data(plaintext)
-        } catch let error as DTLSRecordProtectionError {
+        } catch let error {
             throw mapOpenError(error)
         }
     }
@@ -93,7 +93,7 @@ public enum DTLSRecordCryptor: Sendable {
         let keyBytes = [UInt8](key.withUnsafeBytes { Data($0) })
         do {
             return try Protector(aead: DTLSRecordAEAD(key: keyBytes), fixedIV: [UInt8](fixedIV))
-        } catch let error as DTLSRecordProtectionError {
+        } catch let error {
             throw mapSealError(error)
         }
     }

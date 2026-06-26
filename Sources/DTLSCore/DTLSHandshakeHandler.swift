@@ -164,7 +164,7 @@ public final class DTLSClientHandshakeHandler: Sendable {
                 guard let random = s.clientRandom else {
                     throw DTLSError.invalidState("Missing client random for cookie retry")
                 }
-                let clientHello = try DTLSClientHello(
+                let clientHello = DTLSClientHello(
                     random: random,
                     cookie: Data(cookie),
                     cipherSuites: supportedCipherSuites

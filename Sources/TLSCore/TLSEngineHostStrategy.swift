@@ -130,8 +130,12 @@ extension TLSConfiguration {
         }
         // RFC 7250 raw public key.
         if peerCertificateTypes == [.rawPublicKey] {
-            guard let spki = try? SubjectPublicKeyInfo.decode(from: Data(leaf)) else { return nil }
-            let key = spki.verificationKey
+            let key: VerificationKey
+            do {
+                key = try SubjectPublicKeyInfo.decode(from: Data(leaf)).verificationKey
+            } catch {
+                return nil
+            }
             if let expected = expectedPeerPublicKey {
                 return ([UInt8](expected), key.scheme)
             }
@@ -140,9 +144,16 @@ extension TLSConfiguration {
         // X.509. `extractPublicKey()` returns `any TLSVerificationKey`; the concrete
         // `VerificationKey` carries `publicKeyBytes` (matching the legacy adapter's
         // `peerVerificationKey as? VerificationKey` resolution).
-        guard let cert = try? X509Certificate.parse(from: Data(leaf)),
-              let anyKey = try? cert.extractPublicKey(),
-              let key = anyKey as? VerificationKey else { return nil }
+        let key: VerificationKey
+        do {
+            let cert = try X509Certificate.parse(from: Data(leaf))
+            guard let extracted = try cert.extractPublicKey() as? VerificationKey else {
+                return nil
+            }
+            key = extracted
+        } catch {
+            return nil
+        }
         if let expected = expectedPeerPublicKey {
             return ([UInt8](expected), key.scheme)
         }

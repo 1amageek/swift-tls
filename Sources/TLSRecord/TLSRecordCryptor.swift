@@ -175,7 +175,7 @@ public final class TLSRecordCryptor: Sendable {
                 aead: TLSRecordAEAD(key: key, cipherSuite: cipherSuite),
                 iv: iv
             )
-        } catch let error as TLSRecordProtectionError {
+        } catch let error {
             throw Self.mapProtectionError(error)
         }
     }

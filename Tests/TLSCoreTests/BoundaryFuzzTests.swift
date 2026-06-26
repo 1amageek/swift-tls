@@ -125,7 +125,10 @@ struct BoundaryFuzzTests {
     func testShortASN1SequenceNoCrash() {
         // This is actually a well-formed short SEQUENCE — verify no crash
         let data = Data([0x30, 0x05, 0x02, 0x01, 0x00])
-        _ = try? ASN1Parser.parseOne(from: data)
+        do {
+            _ = try ASN1Parser.parseOne(from: data)
+        } catch {
+        }
     }
 
     @Test("Empty data as ASN.1 should throw")
@@ -215,7 +218,10 @@ struct BoundaryFuzzTests {
     func testDeterministicBytePatternsASN1NoCrash() {
         for seed: UInt8 in [0, 37, 73, 127, 191, 251] {
             let data = Data((0..<128).map { UInt8($0 &* seed &+ 13) })
-            _ = try? ASN1Parser.parseOne(from: data)
+            do {
+                _ = try ASN1Parser.parseOne(from: data)
+            } catch {
+            }
         }
     }
 

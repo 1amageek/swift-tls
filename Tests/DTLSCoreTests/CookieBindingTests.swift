@@ -67,7 +67,7 @@ struct CookieBindingTests {
         }
 
         // The SAME ClientHello A replayed with its own cookie verifies successfully.
-        let helloAWithCookie = try DTLSClientHello(
+        let helloAWithCookie = DTLSClientHello(
             random: helloA.random,
             cookie: cookie,
             cipherSuites: helloA.cipherSuites
@@ -114,7 +114,7 @@ struct CookieBindingTests {
             try server.processClientHello(encodeClientHello(hello), clientAddress: addrA)
         )
 
-        let helloWithCookie = try DTLSClientHello(
+        let helloWithCookie = DTLSClientHello(
             random: hello.random,
             cookie: cookie,
             cipherSuites: hello.cipherSuites
