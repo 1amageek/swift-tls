@@ -91,7 +91,7 @@ let package = Package(
         // DER encoding TLS 1.3 CertificateVerify requires (RFC 8446 §4.2.3). This is
         // UNIFORM with swift-quic's `QUICCryptoProvider`.
         //
-        // This is now possible because swift-p2p-crypto's host `FoundationCryptoProvider`
+        // This is now possible because swift-p2p-crypto's host `FoundationEssentialsCryptoProvider`
         // sources `Crypto` from the SAME `apple/swift-crypto` identity that
         // swift-certificates uses (range `3.12.3..<5.0.0`), with the vendored BoringSSL
         // given a DISTINCT identity (`p2p-boringssl`). There is therefore one coherent

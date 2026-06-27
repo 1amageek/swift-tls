@@ -33,9 +33,9 @@ import P2PCoreCrypto
 // below. Mirror `DefaultCryptoProvider`'s own backend selection so this composite
 // resolves to the same backend in each build.
 #if hasFeature(Embedded)
-import P2PCryptoEmbedded
+import P2PCryptoBoringSSL
 #else
-import P2PCryptoFoundation
+import P2PCryptoFoundationEssentials
 #endif
 
 /// The crypto provider the swift-tls cores specialise at. Identical to
