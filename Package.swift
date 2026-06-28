@@ -93,8 +93,8 @@ let package = Package(
         //
         // This is now possible because swift-p2p-crypto's host `FoundationEssentialsCryptoProvider`
         // sources `Crypto` from the SAME `apple/swift-crypto` identity that
-        // swift-certificates uses (range `3.12.3..<5.0.0`), with the vendored BoringSSL
-        // given a DISTINCT identity (`p2p-boringssl`). There is therefore one coherent
+        // swift-certificates uses (range `3.12.3..<5.0.0`), with vendored BoringSSL
+        // wired behind renamed local C targets. There is therefore one coherent
         // `swift-crypto` in the graph and no `.macOS(.v26)` floor is forced onto
         // swift-certificates — the stale rejection that previously blocked this is gone.
         // The swift-crypto range below mirrors swift-p2p-crypto/swift-quic so the whole

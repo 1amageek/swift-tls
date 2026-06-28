@@ -85,7 +85,7 @@ backward-compatibility obligation to the old `Data` / `TLSConnection` API.
   fail-closed. The Embedded path therefore serves only the raw-public-key
   (`.rawPublicKey`) deployments (libp2p / WebRTC). Do not add a silent accept.
 - **Under Embedded the unified `TLSCryptoProvider` uses a BoringSSL backend**
-  (vendored `p2p-boringssl`); swift-crypto is dropped from the Embedded dependency
+  (vendored local C targets); swift-crypto is dropped from the Embedded dependency
   set. The "no BoringSSL/OpenSSL" property holds only for the host build.
 
 ## Build

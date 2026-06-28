@@ -27,7 +27,7 @@ import P2PCoreBytes
 import P2PCoreCrypto
 import P2PCoreDER
 #if hasFeature(Embedded)
-import P2PCryptoBoringSSL
+import P2PCrypto
 #endif
 
 // MARK: - Raw r||s <-> DER SEQUENCE { INTEGER r, INTEGER s }

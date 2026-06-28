@@ -27,7 +27,7 @@
 import P2PCoreBytes
 import P2PCoreCrypto
 import P2PCoreDER
-import P2PCryptoBoringSSL
+import P2PCrypto
 import TLSWireCore
 import DTLSWireCore
 import TLSCryptoCore
