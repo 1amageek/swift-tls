@@ -2,7 +2,7 @@
 
 Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), with a single Tier-1 facade and a cored, Embedded-clean engine underneath. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
 
-> **Release status.** The released `1.3.0` ships the prior API (`TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` with `TLSConnection` / `DTLSConnection`). The Embedded-first API documented here (`TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`) lives on the unreleased `embedded` branch (M8 pending) and is not tagged — pin to the branch to use it.
+> **Release status.** Current release: `1.3.2`.
 
 ## Features
 
@@ -46,11 +46,11 @@ On host, the unified crypto provider is built on [Swift Crypto](https://github.c
 
 ## Installation
 
-Add to your `Package.swift` (use the `embedded` branch for the facade API — `1.3.0` ships the old API):
+Add swift-tls to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-tls.git", branch: "embedded"),
+    .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.2"),
 ]
 ```
 
