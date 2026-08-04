@@ -1,8 +1,29 @@
-# swift-tls
+# swift-tls-sessions
 
-Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)) and DTLS 1.2 ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), with a single Tier-1 facade and a cored, Embedded-clean engine underneath. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
+Pure Swift session facade for TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)), DTLS 1.2 WebRTC ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), and QUIC TLS. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
 
-> **Release status.** Current release: `1.3.2`.
+> **Release status.** Current release: `2.0.0`.
+
+## Ecosystem responsibility
+
+`swift-tls-sessions` is the public session boundary for the TLS protocol family. It exposes separate
+> Stream TLS, DTLS, and QUIC TLS profiles and delegates their cryptographic,
+> PKI, wire, transcript, key-schedule, record, and handshake mechanisms to
+> [swift-ssl](https://github.com/1amageek/swift-ssl). It does not own transport
+> I/O or a second TLS implementation.
+
+```text
+swift-libp2p ───────────────> swift-tls-sessions / TLS ──────┐
+swift-libp2p -> swift-webrtc -> swift-tls-sessions / DTLS ──┼-> swift-ssl
+swift-libp2p -> swift-quic ──> swift-tls-sessions / QUICTLS ┘
+```
+
+All TLS/DTLS wire codecs, transcript/key schedule, handshake, replay, flight,
+cookie, exporter, and record mechanisms are owned by `swift-ssl`. This package
+only adapts those mechanisms to session configuration, caller-owned transport
+bytes, timers, identity/trust capabilities, and one typed facade error. See the
+[workspace secure-transport architecture](../../SECURE_TRANSPORT_ARCHITECTURE.md)
+for the ownership contract.
 
 ## Features
 
@@ -22,7 +43,7 @@ Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/
 - `Span<UInt8>` input lets adapters feed byte views without pre-materializing `Data`
 - Swift 6 strict concurrency (`Sendable`, lock-based facade)
 
-### DTLS 1.2
+### DTLS 1.2 WebRTC profile
 
 - Full DTLS 1.2 handshake (client and server)
 - Cipher suite: `ECDHE-ECDSA-AES128-GCM-SHA256`
@@ -31,26 +52,34 @@ Pure Swift implementation of TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/
 - Anti-replay protection with 64-bit sliding window (RFC 6347 §4.1.2.6); bad-MAC records are discarded while datagram processing continues
 - Non-fatal record anomalies (bad MAC, replay, too-old, malformed) are surfaced via `DTLSOutput.anomalies` instead of being silently swallowed
 - Handshake fragment reassembly is bounded to resist memory-exhaustion DoS
-- Epoch-based key management; epoch/sequence monotonicity
+- Epoch-based key management with repeated read/write rekey, per-epoch sequence
+  reset, anti-replay reset, and one bounded prior write epoch for retained-flight
+  retransmission
 - Flight retransmission with exponential backoff (driven by `handleTimeout()`)
-- Certificate fingerprint verification (WebRTC compatible)
+- Certificate fingerprint verification is performed by `swift-webrtc` after the
+  DTLS peer proof succeeds; this facade only exposes the authenticated peer
+  certificate material and SRTP exporter output.
 
 ### Cryptographic backend
 
-On host, the unified crypto provider is built on [Swift Crypto](https://github.com/apple/swift-crypto), [Swift Certificates](https://github.com/apple/swift-certificates), and [Swift ASN.1](https://github.com/apple/swift-asn1). **Under Embedded Swift, swift-crypto is dropped** and the provider uses a vendored BoringSSL backend (`p2p-boringssl`, via `EmbeddedDERSignature.swift`) for the DER-ECDSA CertificateVerify signatures — its DER output is byte-identical to the host's. So the package depends on BoringSSL only in the Embedded build; the host build does not.
+The unified crypto provider uses `swift-ssl/SSLCrypto` through the shared
+`P2PCoreCrypto` contracts on Native, WASM, and Embedded. Certificate parsing and
+fingerprint binding are supplied by the caller (WebRTC owns its signaling-bound
+identity policy); this facade does not select BoringSSL, CryptoKit, or a host-only
+certificate backend.
 
 ## Requirements
 
-- Swift tools 6.2+
+- Swift 6.4 development snapshot `2026-07-23` (tools version `6.4`)
 - macOS 26+ / iOS 26+ / tvOS 26+ / watchOS 26+ / visionOS 26+
 
 ## Installation
 
-Add swift-tls to your `Package.swift`:
+Add swift-tls-sessions to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-tls.git", from: "1.3.2"),
+    .package(url: "https://github.com/1amageek/swift-tls.git", from: "2.0.0"),
 ]
 ```
 
@@ -61,21 +90,60 @@ Then depend on the facade product:
     name: "YourTarget",
     dependencies: [
         .product(name: "TLS", package: "swift-tls"),
-        // Opt-in pure wire codecs (only if you need to build/parse records yourself):
-        // .product(name: "TLSWire", package: "swift-tls"),
-        // .product(name: "DTLSWire", package: "swift-tls"),
+        // Wire codecs are opt-in products of swift-ssl, not session products.
+        // .product(name: "TLSWire", package: "swift-ssl"),
+        // .product(name: "DTLSWire", package: "swift-ssl"),
     ]
 )
 ```
 
 ### Embedded Swift
 
-`--target TLS -c release` compiles under Embedded Swift. The cores (engine / wire / crypto schedule / provider) and the facade are dual-built; under Embedded the facade uses the RFC 7250 raw-public-key strategy (`P2PCoreDER` SPKI extraction, fail-closed) instead of swift-certificates/X.509, and `FacadeLock` replaces `Synchronization.Mutex`.
+The facade's release runtime path is exercised by the WebRTC portable probe,
+which drives the `TLS` product through a mutual DTLS-SRTP/H.264 round trip. The
+cores (engine / wire / crypto schedule / provider) and the facade are dual-built;
+the portable facade accepts the same DER + raw-key identity contract as Native,
+with `P2PCoreDER` SPKI extraction and fail-closed validation. `FacadeLock` is the
+same `Synchronization.Mutex` contract on Native, WASM, and Embedded.
 
 ```bash
-P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swiftly run +6.3.1 \
-    swift build --target TLS -c release
+# Normal WASI (run from this package directory)
+TOOLCHAINS=org.swift.64202607231a \
+P2P_CORE_WASM=1 \
+swift run \
+    --package-path ../swift-webrtc \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm \
+    --build-system swiftbuild \
+    --configuration release \
+    WebRTCPlatformIntegrationProbe
+
+# Embedded WASI (run from this package directory)
+TOOLCHAINS=org.swift.64202607231a \
+P2P_CORE_EMBEDDED=1 \
+swift run \
+    --package-path ../swift-webrtc \
+    --swift-sdk swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a_wasm-embedded \
+    --build-system swiftbuild \
+    --configuration release \
+    -debug-info-format none \
+    -Xlinker -lswiftUnicodeDataTables \
+    WebRTCPlatformIntegrationProbe
 ```
+
+## 2.0 design notes
+
+- Build with the pinned Swift 6.4 snapshot and matching Swift SDK.
+- `TLS` and `QUICTLS` are the public products of this package. `TLSWire`,
+  `DTLSWire`, `DTLSHandshake`, and `DTLSRecord` are published by `swift-ssl`;
+  this facade does not expose a duplicate wire or record implementation.
+- DTLS retransmission now exposes a generation token. Schedule from
+  `retransmissionState` and call `handleTimeout(generation:)`; stale timer
+  callbacks return `.superseded` instead of retransmitting a newer flight.
+- WebRTC callers configure `DTLSSRTPConfiguration`, read the authenticated
+  `negotiatedSRTPProtectionProfile`, and derive directional material with
+  `srtpKeyingMaterial()` only after the handshake is established.
+- `P2PCoreBytes` and `P2PCoreCrypto` are owned and published by `swift-ssl`;
+  `P2PCrypto` remains the policy/provider adapter from `swift-p2p-core`.
 
 ## Quick Start
 
@@ -133,8 +201,8 @@ while !dtls.isEstablished {
     let received: [UInt8] = try await udp.receive()
     let output = try dtls.receive(received.span)
     for datagram in output.datagramsToSend { try await udp.send(datagram) }
-    // On a flight timeout, retransmit:
-    //   for datagram in try dtls.handleTimeout() { try await udp.send(datagram) }
+    // On a flight timeout, use the current generation token:
+    //   let result = try dtls.handleTimeout(generation: dtls.retransmissionState.generation)
 }
 
 // Application data.
@@ -173,10 +241,9 @@ while !dtls.isEstablished {
 | Product | Import | Visibility | Description |
 |---------|--------|------------|-------------|
 | **TLS** | `import TLS` | public | Tier-1 facade — the only module a normal user imports. `TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`. |
-| **TLSWire** | `import TLSWire` | public | Tier-3 pure TLS 1.3 wire codec (target `TLSWireCore`), no crypto, no I/O. |
-| **DTLSWire** | `import DTLSWire` | public | Tier-3 pure DTLS 1.2 wire codec (target `DTLSWireCore`). |
-
-The former public products `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` have been **demoted to `package`-visibility targets** (host legacy / host strategy bridges). They are no longer importable from outside the package. Use the `TLS` facade instead.
+The wire products are published by `swift-ssl` (`TLSWire`, `DTLSWire`,
+`DTLSHandshake`, and `DTLSRecord`) for callers that need explicit codec seams.
+This package publishes only the session products `TLS` and `QUICTLS`.
 
 ### Public API (Tier-1 facade)
 
@@ -204,7 +271,7 @@ Connection state and peer material:
 
 - `var isEstablished: Bool` — handshake complete.
 - TLS: `var negotiatedALPN: String?`, `var peerCertificates: [[UInt8]]?` (DER chain, leaf first), `var peerIdentity: PeerIdentity?` (from the injected validator).
-- DTLS: `var isClosed: Bool`, `var remoteCertificateDER: [UInt8]?`, `var remoteFingerprint: String?` (host-only, RFC 8122 / SDP form for WebRTC DTLS-SRTP).
+- DTLS: `var isClosed: Bool`, `var remoteCertificateDER: [UInt8]?`; WebRTC computes and verifies the signaling-bound fingerprint in its own layer.
 
 All errors surface as one closed, typed-throws `TLSError` enum (`handshakeNotComplete`, `connectionClosed`, `protocolFailure`, `fatalAlert`, `verificationFailed`, `invalidConfiguration`, `bufferOverflow`, `concurrentReceiveNotAllowed`, `internalError`).
 
@@ -218,27 +285,20 @@ Tier 1  FACADE (public: import TLS)
     final class & Sendable; holds a value-type engine behind FacadeLock
     [UInt8]/Span<UInt8> currency; one TLSError; cert validation + signing injected
 
-Tier 2  ENGINES (package: the cored, sans-IO drivers)
-  TLSEngineCore   : TLSClientEngine<C> / TLSServerEngine<C>
-  DTLSEngineCore  : DTLSClientEngine<C> / DTLSServerEngine<C>
-    value type, caller-locked, sans-IO, generic over C: CryptoProvider
-    drives the handshake FSMs (TLSHandshakeCore / DTLSHandshakeCore) through the
-    record layer; cert-validation + signing are injected via *EngineConfiguration<C>
-    closures (no `any`, no Foundation, no Mutex)
-  TLSCryptoCore   : TLS 1.3 key schedule (HKDF, transcript hash)
-  TLSCryptoProvider (target) : the unified provider —
-    DefaultCryptoProvider for every primitive EXCEPT the two ECDSA signature
-    schemes, which are DER-encoded for the CertificateVerify wire (RFC 8446 §4.2.3);
-    host = swift-crypto derRepresentation, Embedded = BoringSSL r||s + P2PCoreDER
+Tier 2  MECHANISMS (owned by swift-ssl; imported by the facade)
+  SSLTLS / SSLDTLS : deterministic, sans-IO protocol engines
+    value type, caller-locked, Embedded-clean, typed throws
+    DTLS 1.2 wire, handshake, record, replay, flight, cookie, and exporter
+    behavior is implemented only in SSLDTLS
+  TLSCryptoProvider (target) : a type-specialized view of
+    the shared P2PCoreCrypto contracts, backed by swift-ssl/SSLCrypto for every
+    primitive. P-256/P-384 ECDSA schemes emit DER for CertificateVerify
+    (RFC 8446 §4.2.3); the explicit Raw* schemes emit fixed-width r || s.
 
-Tier 3  WIRE CODECS (public: import TLSWire / DTLSWire)
-  TLSWireCore / DTLSWireCore : pure encode/decode over ByteReader/ByteWriter,
-    no crypto, no I/O
-
-  Host legacy (package, NOT public): TLSCore / TLSRecord / DTLSCore / DTLSRecord
-    host TLSConnection / TLS13Handler / DTLSConnection + state machines, and the
-    host (swift-certificates / swift-crypto) strategy bridges that fill the engine
-    seams under #if !hasFeature(Embedded)
+Tier 3  POLICY ADAPTERS (this package)
+  TLS / DTLS configuration and facade classes
+    identity, trust, timer, and transport-facing closures only
+    no duplicate protocol state and no BoringSSL/CryptoKit backend selection
 ```
 
 ## RFC Compliance

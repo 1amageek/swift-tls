@@ -1,27 +1,20 @@
 /// Tier-1 DTLS 1.2 server over UDP datagrams.
 ///
 /// Mirror of `DTLSClient`, wrapping the cored, Embedded-clean
-/// `DTLSServerEngine<TLSCryptoProvider>` (in `DTLSEngineCore`) under a `Mutex`. The
+/// `DTLSServerEngine<TLSCryptoProvider>` (in swift-ssl) under a `Mutex`. The
 /// server receives `remoteAddress` for the HelloVerifyRequest cookie binding
 /// (RFC 6347 §4.2.1); the facade threads it through `receive(_:from:)`.
 ///
-/// ECDHE, the ServerKeyExchange signing, the client CertificateVerify
-/// verification, and the HelloVerifyRequest cookie HMAC are INJECTED into the
-/// engine via the host strategy bridge
-/// (`DTLSCertificate.makeDTLSEngineConfiguration`, gated `#if !hasFeature(Embedded)`);
-/// X.509 never enters the engine itself.
-
-#if !hasFeature(Embedded)
-import Foundation
-import TLSCore
-import DTLSCore
-#endif
+/// ECDHE, the ServerKeyExchange signing, client CertificateVerify verification,
+/// and HelloVerifyRequest cookie HMAC are injected by the single portable
+/// strategy owned by this facade.
 import Synchronization
 import TLSCryptoProvider
-import DTLSEngineCore
+import SSLDTLS
+import DTLSWireCore
 
 public final class DTLSServer: Sendable {
-    private let engine: FacadeLock<DTLSServerEngine<TLSCryptoProvider>>
+    private let engine: FacadeLock<DTLSServerEngineStorage>
 
     /// Creates a DTLS server with the given configuration.
     public init(configuration: DTLSConfiguration) throws(TLSError) {
@@ -32,7 +25,7 @@ public final class DTLSServer: Sendable {
         } catch {
             throw TLSError.fromDTLSEngine(error)
         }
-        self.engine = FacadeLock(created)
+        self.engine = FacadeLock(DTLSServerEngineStorage(value: created))
     }
 
     /// Starts the handshake. A server has nothing to send until the first
@@ -45,15 +38,26 @@ public final class DTLSServer: Sendable {
     /// HelloVerifyRequest cookie to the client's transport address.
     public func receive(_ datagram: Span<UInt8>, from remoteAddress: Span<UInt8>) throws(TLSError) -> DTLSOutput {
         let input = datagram.facadeArray()
-        let addr = remoteAddress.facadeArray()
-        let output = try run { (e) throws(DTLSEngineError) in try e.receive(input.span, from: addr.span) }
-        return DTLSOutput(from: output)
+        let address = remoteAddress.facadeArray()
+        let result: Result<DTLSOutput, TLSError> = engine.withLock { storage in
+            Result { () throws(DTLSEngineError) -> DTLSOutput in
+                let output = try storage.value.receiveOwned(input, from: address)
+                return DTLSOutput(from: consume output)
+            }
+            .mapError(TLSError.fromDTLSEngine)
+        }
+        switch result {
+        case .success(let output): return output
+        case .failure(let error): throw error
+        }
     }
 
     /// Encrypts application data and returns the DTLS datagram to send.
     public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
         let input = application.facadeArray()
-        return try run { (e) throws(DTLSEngineError) in try e.send(input.span) }
+        return try run { (e) throws(DTLSEngineError) in
+            try e.sendOwned(input)
+        }
     }
 
     /// Emits a close_notify alert datagram to gracefully terminate.
@@ -61,34 +65,65 @@ public final class DTLSServer: Sendable {
         try run { (e) throws(DTLSEngineError) in try e.close() }
     }
 
-    /// Datagrams to retransmit on a timeout (DTLS flight retransmission).
-    public func handleTimeout() throws(TLSError) -> [[UInt8]] {
-        try run { (e) throws(DTLSEngineError) in try e.handleTimeout() }
+    /// Current timer token for the active handshake flight.
+    public var retransmissionState: DTLSRetransmissionState {
+        DTLSRetransmissionState(engine: engine.withLock { $0.value.retransmissionState })
+    }
+
+    /// Handles one timeout if `generation` still owns the active flight timer.
+    public func handleTimeout(
+        generation: UInt64
+    ) throws(TLSError) -> DTLSTimeoutResult {
+        let result = try run { (e) throws(DTLSEngineError) in
+            try e.handleTimeout(generation: generation)
+        }
+        return DTLSTimeoutResult(engine: result)
     }
 
     /// Whether the handshake is complete and the connection is usable.
-    public var isEstablished: Bool { engine.withLock { $0.isEstablished } }
+    public var isEstablished: Bool { engine.withLock { $0.value.isEstablished } }
 
     /// Whether the connection has been closed.
-    public var isClosed: Bool { engine.withLock { $0.isClosed } }
+    public var isClosed: Bool { engine.withLock { $0.value.isClosed } }
 
-    /// Peer's DER-encoded certificate, if presented. `nil` if the handshake is
-    /// incomplete or no certificate was received. X.509 chain validation is the
-    /// caller's responsibility; this is the raw leaf the engine recorded.
+    /// Peer's presented DER-encoded certificate, if received.
+    ///
+    /// This value can become available before Finished authenticates the complete
+    /// handshake. Treat it as peer-supplied bytes until ``isEstablished`` is true;
+    /// callers that bind an out-of-band fingerprint must do so only afterwards.
     public var remoteCertificateDER: [UInt8]? {
-        engine.withLock { $0.remoteCertificateDER }
+        engine.withLock { $0.value.remoteCertificateDER }
     }
 
-    #if !hasFeature(Embedded)
-    /// Peer's SHA-256 certificate fingerprint in RFC 8122 / SDP textual form
-    /// (e.g. `"sha-256 AB:CD:..."`), used for WebRTC DTLS-SRTP peer
-    /// authentication. `nil` if no peer certificate is available. Host-only: the
-    /// SDP fingerprint formatting lives in the swift-crypto-backed `DTLSCore`.
-    public var remoteFingerprint: String? {
-        guard let der = remoteCertificateDER else { return nil }
-        return CertificateFingerprint.fromDER(Data(der)).sdpFormat
+    /// The SRTP profile authenticated by the completed DTLS handshake.
+    /// Returns `nil` until Finished has been verified.
+    public var negotiatedSRTPProtectionProfile: DTLSSRTPProtectionProfile? {
+        engine.withLock { engine in
+            engine.value.negotiatedSRTPProfile.map(DTLSSRTPProtectionProfile.init(wireProfile:))
+        }
     }
-    #endif
+
+    /// Derives direction-safe SRTP master keying material via RFC 5705/5764.
+    public func srtpKeyingMaterial() throws(TLSError) -> DTLSSRTPKeyingMaterial {
+        try run { (engine) throws(DTLSEngineError) in
+            guard let profile = engine.negotiatedSRTPProfile else {
+                throw .protocolFailure(reason: "DTLS did not negotiate SRTP")
+            }
+            let bytes = try engine.exportKeyingMaterial(
+                label: "EXTRACTOR-dtls_srtp",
+                context: nil,
+                length: 60
+            )
+            guard let material = DTLSSRTPKeyingMaterial.split(
+                bytes,
+                wireProtectionProfile: profile,
+                localIsClient: false
+            ) else {
+                throw .internalError(reason: "Invalid DTLS-SRTP exporter output")
+            }
+            return material
+        }
+    }
 
     /// Runs an engine operation under the lock, mapping the engine error to the
     /// single facade `TLSError`. The facade is the caller that locks. The engine
@@ -97,7 +132,7 @@ public final class DTLSServer: Sendable {
         _ body: (inout DTLSServerEngine<TLSCryptoProvider>) throws(DTLSEngineError) -> R
     ) throws(TLSError) -> R {
         let result: Result<R, TLSError> = engine.withLock { engine in
-            Result { () throws(DTLSEngineError) -> R in try body(&engine) }
+            Result { () throws(DTLSEngineError) -> R in try body(&engine.value) }
                 .mapError(TLSError.fromDTLSEngine)
         }
         switch result {
@@ -105,4 +140,14 @@ public final class DTLSServer: Sendable {
         case .failure(let error): throw error
         }
     }
+}
+
+/// A concrete facade-owned layout for the provider-specialized engine.
+///
+/// Normal Swift 6.4 WASM must not ask `Mutex<Value>` to dynamically materialize
+/// the value witness table for a cross-module generic engine specialization. This
+/// one-field concrete owner gives the lock a statically emitted layout while the
+/// protected state and mutation entry point remain identical on every target.
+private struct DTLSServerEngineStorage: Sendable {
+    var value: DTLSServerEngine<TLSCryptoProvider>
 }

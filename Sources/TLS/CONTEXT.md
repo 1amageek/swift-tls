@@ -1,27 +1,52 @@
-# swift-tls — CONTEXT
-Scope/role: the TLS/DTLS 1.3/1.2 facade (`Sources/TLS`) plus the cored engines it owns; depended on by libp2p, WebRTC, and peer-connectivity for secure transport.
-Last reviewed: 2026-06-25
+# swift-tls-sessions — CONTEXT
+Scope/role: the TLS/DTLS 1.3/1.2 session facade (`Sources/TLS`) over the canonical
+`swift-ssl` mechanisms; depended on by libp2p, WebRTC, and peer-connectivity for
+secure transport.
+Last reviewed: 2026-08-04
 
 Invariants and design intent that the code does not state structurally. Read this
 before changing the facade (`Sources/TLS`) or the engines. The currency is
 `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package — there is no
 backward-compatibility obligation to the old `Data` / `TLSConnection` API.
 
+## Target ecosystem boundary
+
+- `swift-tls-sessions` owns the public TLS-family session protocols, role-specific
+  configuration, negotiated-session snapshots, typed effects/errors, lifecycle,
+  and correlated capability suspension/resumption.
+- The intended public profiles are `TLS` for reliable streams, `DTLS` for
+  datagrams, and `QUICTLS` for ordered encryption-level-qualified QUIC handshake
+  bytes, sharing contracts from `TLSSessionCore`.
+- `swift-ssl` is the canonical owner of cryptography, PKI, wire semantics,
+  transcript, key schedule, record protection, and TLS/DTLS handshake
+  mechanisms. A completed facade transition delegates to `swift-ssl` and never
+  maintains a parallel transcript or silently selects an independent backend.
+- `swift-tls` performs no socket, UDP, QUIC packet, ICE, SRTP, SCTP, or libp2p
+  orchestration. Those responsibilities remain with its consumers.
+- The stream and DTLS facades use the canonical `swift-ssl` provider path. This
+  package does not own a second TLS/DTLS wire, handshake, replay, or record
+  implementation. Unconfigured legacy directories are cleanup material, not a
+  supported backend or fallback path.
+
+The workspace source of truth is
+[`SECURE_TRANSPORT_ARCHITECTURE.md`](../../../../SECURE_TRANSPORT_ARCHITECTURE.md).
+
 ## Three-tier layering (why, not just what)
 
-- **Tier 1 — facade (`import TLS`).** The ONLY public surface a normal caller
+- **Tier 1 — facade (`import TLS`).** The public stream/DTLS surface a normal caller
   touches: `TLSClient` / `TLSServer` / `DTLSClient` / `DTLSServer`. Non-generic
   (fixed to `TLSCryptoProvider`), one `TLSError`, `[UInt8]`/`Span<UInt8>`. Its job
   is to keep X.509 / Foundation / generics OFF the public surface and to be the
   thing that owns concurrency.
-- **Tier 2 — engines (`package`).** `TLS*Engine<C>` / `DTLS*Engine<C>` in
-  `TLSEngineCore` / `DTLSEngineCore`. The actual protocol drivers. Public-but-package.
-- **Tier 3 — wire codecs (`import TLSWire` / `DTLSWire`).** Pure encode/decode,
-  no crypto, no I/O. Separate opt-in products for callers who build records by hand.
-- The old `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` are now `package`
-  legacy: host `TLSConnection` / `TLS13Handler` / `DTLSConnection` + state machines,
-  PLUS the host (swift-certificates / swift-crypto) strategy bridges that fill the
-  engine seams on host. Do not re-export them; do not route new callers through them.
+- **Tier 2 — mechanisms (`swift-ssl`).** `SSLTLS`, `SSLDTLS`, and `SSLQUIC` own
+  the deterministic protocol drivers, wire/record codecs, key schedules, and
+  typed cryptographic seams. The facade only maps caller effects to these engines.
+- **Tier 3 — shared wire products (`import TLSWire` / `DTLSWire`).** Pure
+  encode/decode, no crypto, no I/O. They are published by `swift-ssl` for callers
+  that need a scoped wire view.
+- The old `TLSCore` / `TLSRecord` / `DTLSCore` / `DTLSRecord` directories are not
+  package targets and are not supported. They must not be restored as a backend
+  selection mechanism.
 
 ## The engine pattern (the load-bearing contract)
 
@@ -33,18 +58,13 @@ backward-compatibility obligation to the old `Data` / `TLSConnection` API.
 - TLS facade methods are `async` (source compatibility only — the engine never
   suspends, it is lock-bound not I/O-bound, so they complete promptly). DTLS facade
   methods are synchronous. Keep this asymmetry; it is intentional.
-- The engines are **Embedded-clean**: no Foundation, no `any` existentials, no
-  `Mutex`, no `ContinuousClock`, no swift-crypto, no X509. Typed throws
-  (`TLSEngineError` / `DTLSEngineError`). A new engine-level error must stay typed —
-  a cross-type `catch` must live in a NAMED function, never a closure literal
-  (Embedded Swift binds `any Error` inside a closure `catch`).
-- The two genuinely host-coupled jobs — CertificateVerify **signing** (a private
-  key) and **certificate trust evaluation** (X.509 chain / RFC-7250 raw-key match /
-  libp2p PeerID hook) — are INJECTED as `@Sendable` closures via
-  `*EngineConfiguration<C>` (`sign`, `validateCertificate`, `resolvePeerKey`,
-  and for DTLS `ecdheGenerate`/`ecdheAgree`/`verifyPeerSignature`/`makeCookie`/
-  `verifyCookie`). The facade fills them: host bridge under `#if !hasFeature(Embedded)`,
-  Embedded RPK strategy under `#if hasFeature(Embedded)`. X.509 never enters an engine.
+- The canonical `swift-ssl` mechanisms are **Embedded-clean** and use typed
+  throws. CertificateVerify signing, certificate parsing, trust evaluation,
+  record protection, and key derivation all resolve through `SSLCrypto` and
+  `SSLX509`; the session façade does not select a host or BoringSSL backend.
+- A consumer may inject a typed PeerID/application policy callback after the
+  cryptographic proof succeeds. That policy callback cannot replace signature
+  verification, certificate parsing, or key derivation.
 
 ## Security invariants (must hold; tests guard them)
 
@@ -64,32 +84,30 @@ backward-compatibility obligation to the old `Data` / `TLSConnection` API.
   continues, and the anomaly is surfaced via `DTLSOutput.anomalies` — never silently
   swallowed.
 - **Epoch / sequence monotonicity** in the DTLS record layer must be preserved.
-- **DER-ECDSA on the wire is byte-identical host vs Embedded.** The CertificateVerify
-  ECDSA signature is DER-encoded (RFC 8446 §4.2.3): host via swift-crypto
-  `derRepresentation`, Embedded via BoringSSL raw `r||s` + a `P2PCoreDER` wrapper.
+- **DER-ECDSA on the wire is byte-identical across targets.** The CertificateVerify
+  signature is encoded by the canonical `swift-ssl` DER implementation on Native,
+  WASM, and Embedded.
   Any change to one encoder must keep the two outputs identical.
 
 ## Embedded constraints handled (do not regress)
 
-- **`FacadeLock`, not `Synchronization.Mutex`.** `Mutex` is unavailable under
-  Embedded; `FacadeLock` is `Mutex` on host and an `Atomic<Bool>` spinlock box under
-  Embedded. Use `FacadeLock` for any new facade-held state — never `Mutex` directly.
-- **Gate on `hasFeature(Embedded)`, NOT `canImport(Foundation)`.** Host vs Embedded
-  source selection (host strategy bridges, `remoteFingerprint`, the strategy files)
-  all key off `#if hasFeature(Embedded)`. Keep this consistent so the Embedded build
-  excludes the swift-crypto / X.509 / Foundation code.
-- **Embedded cert strategy = P2PCoreDER SPKI extraction, fail-closed.** Under
-  Embedded there is no X.509: peer-key resolution parses the leaf's
-  SubjectPublicKeyInfo (RFC 7250 raw public key) via `P2PCoreDER`. A full X.509 leaf
-  (not a bare SPKI) is unparseable and yields `nil` / throws, which the core rejects
-  fail-closed. The Embedded path therefore serves only the raw-public-key
-  (`.rawPublicKey`) deployments (libp2p / WebRTC). Do not add a silent accept.
-- **Under Embedded the unified `TLSCryptoProvider` uses a BoringSSL backend**
-  (vendored local C targets); swift-crypto is dropped from the Embedded dependency
-  set. The "no BoringSSL/OpenSSL" property holds only for the host build.
+- **One facade synchronization contract on every target.** `FacadeLock<Value>` is
+  an alias of `Synchronization.Mutex<Value>` on Native, WASM, and Embedded. The
+  value engines remain caller-locked; target-specific mutex mechanics belong to
+  the linked Swift platform implementation. Never replace Embedded facade state
+  with a raw variable, spinlock box, or target-conditioned `Sendable` contract.
+- **Certificate strategy is shared by module capability.** Native, WASM, and
+  Embedded use the same `SSLX509` parser and trust contract. A target that lacks
+  a required platform hook fails with a typed capability error; it never silently
+  switches to a raw-public-key or host-only implementation.
+- **Every target uses the unified `TLSCryptoProvider` over swift-ssl.** Native,
+  WASM, and Embedded resolve the same Pure Swift provider. Target differences are
+  limited to platform allocation and synchronization implementations.
 
 ## Build
 
-- Host: `swift build` (Swift tools 6.2, platform floor v26).
-- Embedded facade: `P2P_CORE_EMBEDDED=1 P2P_CRYPTO_EMBEDDED=1 swiftly run +6.3.1
-  swift build --target TLS -c release`.
+- Host: use the pinned Swift 6.4 development snapshot (platform floor v26).
+- Normal WASI facade: use the matching Swift 6.4 WASM SDK with
+  `P2P_CORE_WASM=1 swift build --target TLS -c release`.
+- Embedded facade: use the matching Swift 6.4 Embedded WASM SDK with
+  `P2P_CORE_EMBEDDED=1 swift build --target TLS -c release`.

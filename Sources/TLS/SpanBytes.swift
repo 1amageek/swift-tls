@@ -1,19 +1,18 @@
-/// Bulk Span<UInt8> -> [UInt8] conversion for the facade boundary.
+/// Bulk `Span<UInt8>` to `[UInt8]` conversion for the facade boundary.
 ///
-/// One `memcpy`-class copy (`unsafeUninitializedCapacity` + `update(from:)`),
-/// never the element-wise `for`-append loop that regressed throughput.
-import P2PCoreBytes
-
+/// The facade establishes one owned buffer before a borrowed view crosses its
+/// mutex closure. The engine's package-owned entry points consume that same
+/// buffer without another packet-sized materialization.
 extension Span where Element == UInt8 {
     @inline(__always)
     func facadeArray() -> [UInt8] {
-        let n = count
-        guard n > 0 else { return [] }
-        return [UInt8](unsafeUninitializedCapacity: n) { destination, initializedCount in
-            withUnsafeBufferPointer { source in
-                destination.baseAddress!.update(from: source.baseAddress!, count: n)
-            }
-            initializedCount = n
+        var result: [UInt8] = []
+        result.reserveCapacity(count)
+        var index = 0
+        while index < count {
+            result.append(self[index])
+            index += 1
         }
+        return result
     }
 }

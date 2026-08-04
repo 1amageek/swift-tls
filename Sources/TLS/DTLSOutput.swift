@@ -29,32 +29,43 @@ public struct DTLSOutput: Sendable {
     /// Non-fatal record anomalies observed while processing the datagram.
     public let anomalies: [Anomaly]
 
+    /// Timer state atomically captured after processing this datagram.
+    public let retransmissionState: DTLSRetransmissionState
+
     public init(
         datagramsToSend: [[UInt8]] = [],
         applicationData: [UInt8] = [],
         handshakeComplete: Bool = false,
         peerClosed: Bool = false,
-        anomalies: [Anomaly] = []
+        anomalies: [Anomaly] = [],
+        retransmissionState: DTLSRetransmissionState = .init(
+            generation: 0,
+            nextDelay: nil
+        )
     ) {
         self.datagramsToSend = datagramsToSend
         self.applicationData = applicationData
         self.handshakeComplete = handshakeComplete
         self.peerClosed = peerClosed
         self.anomalies = anomalies
+        self.retransmissionState = retransmissionState
     }
 }
 
-import DTLSEngineCore
+import SSLDTLS
 
 extension DTLSOutput {
-    /// Bridges the cored ``DTLSEngineCore/DTLSEngineOutput`` to the facade output.
-    init(from engine: DTLSEngineOutput) {
+    /// Bridges the swift-ssl DTLS engine output to the facade output.
+    init(from engine: consuming DTLSEngineOutput) {
         self.init(
             datagramsToSend: engine.datagramsToSend,
             applicationData: engine.applicationData,
             handshakeComplete: engine.handshakeComplete,
             peerClosed: engine.peerClosed,
-            anomalies: engine.anomalies.map(DTLSOutput.Anomaly.from)
+            anomalies: engine.anomalies.map(DTLSOutput.Anomaly.from),
+            retransmissionState: DTLSRetransmissionState(
+                engine: engine.retransmissionState
+            )
         )
     }
 }

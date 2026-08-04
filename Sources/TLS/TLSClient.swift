@@ -1,124 +1,100 @@
-/// Tier-1 TLS 1.3 client over a reliable byte stream (TCP).
-///
-/// The non-generic facade fixed to the unified `TLSCryptoProvider`. It wraps the
-/// cored, Embedded-clean `TLSClientEngine<TLSCryptoProvider>` (in `TLSEngineCore`)
-/// and presents a `[UInt8]`/`Span<UInt8>` surface with a single `TLSError`.
-///
-/// ## The engine pattern (driver model)
-///
-/// The engine is a **value-type, sans-IO, `mutating` state machine** that drives
-/// the cored handshake FSMs through a record-layer suite-protector. The facade is
-/// the **caller that locks**: it is a `final class` holding the engine in a `Mutex`
-/// (the engine itself holds no lock), so the public methods are `Sendable`-safe.
-/// They are `async` for source compatibility (the engine never actually suspends —
-/// it is lock-based, not I/O-bound — so they complete promptly).
-///
-/// X.509 trust + CertificateVerify signing are INJECTED into the engine via the
-/// host strategy bridge (`TLSCore.makeClientEngineConfiguration`, gated
-/// `#if !hasFeature(Embedded)`); X.509 never enters the engine itself.
-///
-/// Usage:
-/// 1. `startHandshake()` → send the returned bytes to the peer.
-/// 2. Feed peer bytes into `receive(_:)`; send `output.bytesToSend`; read
-///    `output.applicationData`; check `output.handshakeComplete`.
-/// 3. After the handshake, `send(_:)` encrypts application data.
-/// 4. `close()` emits a close_notify.
-
+import SSLTLS
 import Synchronization
-import TLSCryptoProvider
-import TLSEngineCore
-#if !hasFeature(Embedded)
-import TLSCore
-#endif
 
+/// TLS 1.3 client session over a reliable byte stream.
+///
+/// The session owns the canonical `swift-ssl` handshake state. `Mutex` is the
+/// sole isolation boundary; no I/O or suspension occurs while it is held.
 public final class TLSClient: Sendable {
-    private let engine: FacadeLock<TLSClientEngine<TLSCryptoProvider>>
+    private let engine: Mutex<TLSClientStorage>
+    private let capture: CanonicalPeerCapture
 
-    /// Creates a TLS client with the given configuration.
     public init(configuration: TLSConfiguration = .init()) throws(TLSError) {
-        let engineConfig = try configuration.makeClientEngineConfiguration()
-        let created: TLSClientEngine<TLSCryptoProvider>
-        do {
-            created = try TLSClientEngine<TLSCryptoProvider>(configuration: engineConfig)
-        } catch {
-            throw TLSError.fromEngine(error)
-        }
-        self.engine = FacadeLock(created)
+        let factory = try configuration.makeClientFactory()
+        let handshake = consume factory.handshake
+        self.engine = Mutex(TLSClientStorage(handshake: handshake))
+        self.capture = factory.capture
     }
 
-    /// Starts the handshake, returning the ClientHello bytes to send.
     public func startHandshake() async throws(TLSError) -> [UInt8] {
-        try run { (e) throws(TLSEngineError) in try e.startHandshake() }
+        let output = try run { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.start()
+        }
+        return try CanonicalTLSProjection.bytesToSend(output)
     }
 
-    /// Feeds bytes received from the peer and returns the aggregate effects.
     public func receive(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
-        let input = bytes.facadeArray()
-        let output = try run { (e) throws(TLSEngineError) in try e.receive(input.span) }
-        return TLSOutput(
-            bytesToSend: output.bytesToSend,
-            applicationData: output.applicationData,
-            handshakeComplete: output.handshakeComplete,
-            peerClosed: output.peerClosed
-        )
+        let output = try run { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.receive(bytes)
+        }
+        return try CanonicalTLSProjection.output(output)
     }
 
-    /// Encrypts application data and returns the TLS records to send.
     public func send(_ application: Span<UInt8>) async throws(TLSError) -> [UInt8] {
-        let input = application.facadeArray()
-        return try run { (e) throws(TLSEngineError) in try e.send(input.span) }
+        let output = try run { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.sendApplicationData(application)
+        }
+        return try CanonicalTLSProjection.bytesToSend(output)
     }
 
-    /// Emits a close_notify alert (encoded record) to gracefully terminate.
     public func close() async throws(TLSError) -> [UInt8] {
-        try run { (e) throws(TLSEngineError) in try e.close() }
+        let output = try run { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            let output = try state.handshake.sendCloseNotify()
+            state.closed = true
+            return output
+        }
+        return try CanonicalTLSProjection.bytesToSend(output)
     }
 
-    /// Whether the handshake is complete and the connection is usable.
-    public var isEstablished: Bool { engine.withLock { $0.isEstablished } }
+    public var isEstablished: Bool {
+        engine.withLock { $0.handshake.isEstablished && !$0.closed }
+    }
 
-    /// The negotiated ALPN protocol, if any.
-    public var negotiatedALPN: String? { engine.withLock { $0.negotiatedALPN } }
+    public var negotiatedALPN: String? {
+        engine.withLock { state -> String? in
+            guard let protocolValue = state.handshake.negotiatedApplicationProtocol else {
+                return nil
+            }
+            return protocolValue.withIdentifierBytes { CanonicalTLSConversion.string(from: $0) }
+        }
+    }
 
-    /// Peer's DER-encoded certificates (leaf first), if presented. Populated after
-    /// the handshake. X.509 chain validation is the injected validator's job
-    /// (`TLSConfiguration.certificateValidator`); this is the raw chain the engine
-    /// recorded. `nil` if the peer presented no certificate.
     public var peerCertificates: [[UInt8]]? {
-        engine.withLock { $0.peerCertificates }
+        capture.certificates?.map { $0.der }
     }
 
-    /// The application peer identity established by the certificate validator, if
-    /// any. Reconstructed from the validator's identifier bytes and the recorded
-    /// peer certificate chain. `nil` when no validator ran or it produced no
-    /// identity (an anonymous handshake stays `nil`); a validator throw fails the
-    /// handshake, so this never surfaces an unverified peer.
     public var peerIdentity: PeerIdentity? {
-        engine.withLock { engine in
-            guard let identifier = engine.peerIdentifier else { return nil }
-            let certificates = (engine.peerCertificates ?? []).map { Certificate(der: $0) }
-            return PeerIdentity(identifier: identifier, certificates: certificates)
-        }
+        capture.identity
     }
 
-    /// Runs an engine operation under the lock, mapping the engine error to the
-    /// single facade `TLSError`. The facade is the caller that locks. The engine
-    /// only throws `TLSEngineError`, so the closure is typed-throws (Embedded-clean —
-    /// no `any Error` binding) and `TLSError.fromEngine` does the mapping.
-    private func run<R: Sendable>(
-        _ body: (inout TLSClientEngine<TLSCryptoProvider>) throws(TLSEngineError) -> R
-    ) throws(TLSError) -> R {
-        // Map the thrown engine error to the Sendable facade `TLSError` INSIDE the
-        // lock so only Sendable values cross the lock boundary. `Result`'s typed
-        // `init(catching:)` keeps the failure type `TLSEngineError` (no `any Error`
-        // binding — Embedded-clean).
-        let result: Result<R, TLSError> = engine.withLock { engine in
-            Result { () throws(TLSEngineError) -> R in try body(&engine) }
-                .mapError(TLSError.fromEngine)
+    private func run<Result: Sendable>(
+        _ operation: (inout TLSClientStorage) throws(TLS13HandshakeEngineError) -> Result
+    ) throws(TLSError) -> Result {
+        do {
+            return try engine.withLock { state in
+                try operation(&state)
+            }
+        } catch let error as TLS13HandshakeEngineError {
+            throw error.facadeError
+        } catch {
+#if hasFeature(Embedded)
+            throw .internalError(reason: "TLS engine failure")
+#else
+            throw .internalError(reason: String(describing: error))
+#endif
         }
-        switch result {
-        case .success(let value): return value
-        case .failure(let error): throw error
-        }
+    }
+}
+
+private struct TLSClientStorage: ~Copyable, Sendable {
+    var handshake: TLS13ClientHandshake
+    var closed = false
+
+    init(handshake: consuming TLS13ClientHandshake) {
+        self.handshake = handshake
     }
 }

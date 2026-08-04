@@ -1,11 +1,8 @@
 /// The single public error type for the `TLS` facade.
 ///
-/// The clean break folds swift-tls's ~20 implementation-level error enums
-/// (`TLSConnectionError`, `TLSHandshakeError`, `TLSRecordError`,
-/// `TLSConfigurationError`, `TLSError` (engine), `DTLSConnectionError`, …) into
-/// ONE public, closed, typed-throws enum so a facade caller has a single
-/// exhaustive `catch`. Fine-grained codec errors stay package/internal to the
-/// engines and the Tier-3 `TLSWire`/`DTLSWire` codecs.
+/// The session facade folds mechanism-level failures into one public, closed,
+/// typed-throws enum so a caller has a single exhaustive `catch`. Fine-grained
+/// codec errors stay package-internal to the `swift-ssl` engines and wire codecs.
 
 /// Errors surfaced by `TLSClient`/`TLSServer`/`DTLSClient`/`DTLSServer`.
 public enum TLSError: Error, Equatable, Sendable {
@@ -26,6 +23,8 @@ public enum TLSError: Error, Equatable, Sendable {
     case bufferOverflow
     /// A read/receive was attempted concurrently with another in-flight receive.
     case concurrentReceiveNotAllowed
+    /// A DTLS handshake flight exhausted its bounded retransmission budget.
+    case retransmissionLimitExceeded
     /// An internal invariant was violated; `reason` describes it.
     case internalError(reason: String)
 }
