@@ -77,10 +77,8 @@ let package = Package(
         // ---- Tier-3 pure wire codecs (separate opt-in import) ----
     ],
     dependencies: [
-        // Local canonical Pure Swift mechanism during migration. Restore the
-        // tagged repository URL before publishing a release.
-        .package(path: "../../swift-ssl"),
-        .package(path: "../swift-p2p-core"),
+        .package(name: "swift-ssl", url: "https://github.com/1amageek/swift-ssl.git", branch: "main"),
+        .package(name: "swift-p2p-core", url: "https://github.com/1amageek/swift-p2p-core.git", branch: "main"),
     ],
     targets: [
         // ---- Unified Pure Swift crypto provider (dual-build: host + Embedded) ----
