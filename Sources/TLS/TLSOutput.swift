@@ -45,26 +45,14 @@ enum CanonicalTLSProjection {
         for action in output.actions {
             switch action {
             case .emitRecordBytes(let range):
-                do {
-                    try output.bytes.withBorrowedBytes { bytes throws(TLSError) in
-                        let slice = try bytes.extracting(range.offset..<range.endOffset)
-                        append(slice, to: &bytesToSend)
-                    }
-                } catch let error as TLSError {
-                    throw error
-                } catch {
-                    throw .bufferOverflow
+                try output.bytes.withBorrowedBytes { bytes throws(TLSError) in
+                    let slice = bytes.extracting(range.offset..<range.endOffset)
+                    append(slice, to: &bytesToSend)
                 }
             case .deliverApplicationData(let range, _):
-                do {
-                    try output.bytes.withBorrowedBytes { bytes throws(TLSError) in
-                        let slice = try bytes.extracting(range.offset..<range.endOffset)
-                        append(slice, to: &applicationData)
-                    }
-                } catch let error as TLSError {
-                    throw error
-                } catch {
-                    throw .bufferOverflow
+                try output.bytes.withBorrowedBytes { bytes throws(TLSError) in
+                    let slice = bytes.extracting(range.offset..<range.endOffset)
+                    append(slice, to: &applicationData)
                 }
             case .sendAlert(let alert):
                 if alert == .closeNotify {
