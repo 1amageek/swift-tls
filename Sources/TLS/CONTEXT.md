@@ -61,7 +61,7 @@ The workspace source of truth is
 - The canonical `swift-ssl` mechanisms are **Embedded-clean** and use typed
   throws. CertificateVerify signing, certificate parsing, trust evaluation,
   record protection, and key derivation all resolve through `SSLCrypto` and
-  `SSLX509`; the session façade does not select a host or BoringSSL backend.
+  `SSLX509`; the session façade does not select an external crypto backend.
 - A consumer may inject a typed PeerID/application policy callback after the
   cryptographic proof succeeds. That policy callback cannot replace signature
   verification, certificate parsing, or key derivation.
