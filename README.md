@@ -12,11 +12,18 @@ Pure Swift session facade for TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc
 > [swift-ssl](https://github.com/1amageek/swift-ssl). It does not own transport
 > I/O or a second TLS implementation.
 
-```text
-swift-libp2p ───────────────> swift-tls-sessions / TLS ──────┐
-swift-libp2p -> swift-webrtc -> swift-tls-sessions / DTLS ──┼-> swift-ssl
-swift-libp2p -> swift-quic ──> swift-tls-sessions / QUICTLS ┘
+```mermaid
+flowchart TD
+    LibP2P["swift-libp2p"] --> Sessions["swift-tls-sessions"]
+    WebRTC["swift-webrtc"] --> Sessions
+    QUIC["swift-quic"] --> Sessions
+    Sessions --> SSL["swift-ssl"]
+    SSL --> Types["swift-tls-types / TLSTypes"]
 ```
+
+`swift-tls-types` owns only shared TLS vocabulary. `swift-ssl` owns
+cryptography, PKI, protocol mechanisms, and ownership-backed secret/borrow
+contracts; this package owns the public session contracts above it.
 
 All TLS/DTLS wire codecs, transcript/key schedule, handshake, replay, flight,
 cookie, exporter, and record mechanisms are owned by `swift-ssl`. This package
