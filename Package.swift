@@ -113,6 +113,16 @@ let package = Package(
             path: "Sources/QUICTLS",
             swiftSettings: coreSettings
         ),
+        .executableTarget(
+            name: "swift-tls-facade-validation",
+            dependencies: [
+                "TLS",
+                .product(name: "P2PCoreBytes", package: "swift-ssl"),
+                .product(name: "SSLCrypto", package: "swift-ssl"),
+            ],
+            path: "Validation/Targets/FacadeValidation",
+            swiftSettings: coreSettings
+        ),
         .testTarget(
             name: "TLSCanonicalTests",
             dependencies: [
