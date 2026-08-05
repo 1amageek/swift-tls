@@ -79,7 +79,11 @@ Add swift-tls-sessions to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/swift-tls.git", from: "2.0.0"),
+    .package(
+        name: "swift-tls-sessions",
+        url: "https://github.com/1amageek/swift-tls.git",
+        from: "2.0.0"
+    ),
 ]
 ```
 
@@ -89,7 +93,7 @@ Then depend on the facade product:
 .target(
     name: "YourTarget",
     dependencies: [
-        .product(name: "TLS", package: "swift-tls"),
+        .product(name: "TLS", package: "swift-tls-sessions"),
         // Wire codecs are opt-in products of swift-ssl, not session products.
         // .product(name: "TLSWire", package: "swift-ssl"),
         // .product(name: "DTLSWire", package: "swift-ssl"),
