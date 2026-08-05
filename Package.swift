@@ -61,9 +61,11 @@ let facadeDependencies: [Target.Dependency] = {
 }()
 
 let package = Package(
-    // This package owns the public session contracts. The package identity is
-    // intentionally distinct from Apple's `swift-tls` package, which has a
-    // different scope and cannot be a SwiftPM replacement for this API.
+    // This package owns the public session contracts. The manifest and
+    // dependency alias are intentionally distinct from Apple's `swift-tls`
+    // package. The repository URL remains `swift-tls` during migration; the
+    // stable release must move it to the `swift-tls-sessions` repository so
+    // SwiftPM's URL-derived identity is distinct as well.
     name: "swift-tls-sessions",
     platforms: [
         .macOS(.v26), .iOS(.v26), .tvOS(.v26),
