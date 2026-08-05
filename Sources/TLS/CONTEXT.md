@@ -1,4 +1,4 @@
-# swift-tls-sessions — CONTEXT
+# swift-tls — CONTEXT
 Scope/role: the TLS/DTLS 1.3/1.2 session facade (`Sources/TLS`) over the canonical
 `swift-ssl` mechanisms; depended on by libp2p, WebRTC, and peer-connectivity for
 secure transport.
@@ -11,7 +11,7 @@ backward-compatibility obligation to the old `Data` / `TLSConnection` API.
 
 ## Target ecosystem boundary
 
-- `swift-tls-sessions` owns the public TLS-family session protocols, role-specific
+- `swift-tls` owns the public TLS-family session protocols, role-specific
   configuration, negotiated-session snapshots, typed effects/errors, lifecycle,
   and correlated capability suspension/resumption.
 - The intended public profiles are `TLS` for reliable streams, `DTLS` for

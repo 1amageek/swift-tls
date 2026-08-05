@@ -61,10 +61,8 @@ let facadeDependencies: [Target.Dependency] = {
 }()
 
 let package = Package(
-    // This package owns the public session contracts. Its package identity and
-    // repository URL are intentionally distinct from Apple's `swift-tls`
-    // package, which has a different scope and is not a replacement for this API.
-    name: "swift-tls-sessions",
+    // This package owns the public TLS-family session contracts above swift-ssl.
+    name: "swift-tls",
     platforms: [
         .macOS(.v26), .iOS(.v26), .tvOS(.v26),
         .watchOS(.v26), .visionOS(.v26),

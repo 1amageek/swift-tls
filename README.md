@@ -1,20 +1,20 @@
-# swift-tls-sessions
+# swift-tls
 
 Pure Swift session facade for TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)), DTLS 1.2 WebRTC ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), and QUIC TLS. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
 
-> **Release status.** Current release: `2.0.0`.
+> **Release status.** The canonical package identity is published from the `main` branch. No `2.0.0` release is claimed.
 
 ## Ecosystem responsibility
 
-`swift-tls-sessions` is the public session boundary for the TLS protocol family. It exposes separate
-> Stream TLS, DTLS, and QUIC TLS profiles and delegates their cryptographic,
-> PKI, wire, transcript, key-schedule, record, and handshake mechanisms to
-> [swift-ssl](https://github.com/1amageek/swift-ssl). It does not own transport
-> I/O or a second TLS implementation.
+`swift-tls` is the public session boundary for the TLS protocol family. It exposes separate
+Stream TLS, DTLS, and QUIC TLS profiles and delegates their cryptographic,
+PKI, wire, transcript, key-schedule, record, and handshake mechanisms to
+[swift-ssl](https://github.com/1amageek/swift-ssl). It does not own transport
+I/O or a second TLS implementation.
 
 ```mermaid
 flowchart TD
-    LibP2P["swift-libp2p"] --> Sessions["swift-tls-sessions"]
+    LibP2P["swift-libp2p"] --> Sessions["swift-tls"]
     WebRTC["swift-webrtc"] --> Sessions
     QUIC["swift-quic"] --> Sessions
     Sessions --> SSL["swift-ssl"]
@@ -82,14 +82,14 @@ certificate backend.
 
 ## Installation
 
-Add swift-tls-sessions to your `Package.swift`:
+Add swift-tls to your `Package.swift`:
 
 ```swift
 dependencies: [
     .package(
-        name: "swift-tls-sessions",
-        url: "https://github.com/1amageek/swift-tls-sessions.git",
-        from: "2.0.0"
+        name: "swift-tls",
+        url: "https://github.com/1amageek/swift-tls.git",
+        branch: "main"
     ),
 ]
 ```
@@ -100,7 +100,7 @@ Then depend on the facade product:
 .target(
     name: "YourTarget",
     dependencies: [
-        .product(name: "TLS", package: "swift-tls-sessions"),
+        .product(name: "TLS", package: "swift-tls"),
         // Wire codecs are opt-in products of swift-ssl, not session products.
         // .product(name: "TLSWire", package: "swift-ssl"),
         // .product(name: "DTLSWire", package: "swift-ssl"),
