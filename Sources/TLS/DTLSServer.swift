@@ -106,6 +106,9 @@ public final class DTLSServer: Sendable {
     /// Derives direction-safe SRTP master keying material via RFC 5705/5764.
     public func srtpKeyingMaterial() throws(TLSError) -> DTLSSRTPKeyingMaterial {
         try run { (engine) throws(DTLSEngineError) in
+            guard engine.isEstablished else {
+                throw .handshakeNotComplete
+            }
             guard let profile = engine.negotiatedSRTPProfile else {
                 throw .protocolFailure(reason: "DTLS did not negotiate SRTP")
             }

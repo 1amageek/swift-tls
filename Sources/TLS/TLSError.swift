@@ -8,7 +8,7 @@
 public enum TLSError: Error, Equatable, Sendable {
     /// The handshake is not complete; application data cannot be sent yet.
     case handshakeNotComplete
-    /// The connection has been closed (locally or by a received close_notify).
+    /// The connection has been closed locally or marked terminal by its engine.
     case connectionClosed
     /// A fatal protocol error occurred; the connection is permanently failed.
     /// `reason` is a human-readable description of the underlying failure.
@@ -27,4 +27,6 @@ public enum TLSError: Error, Equatable, Sendable {
     case retransmissionLimitExceeded
     /// An internal invariant was violated; `reason` describes it.
     case internalError(reason: String)
+    /// A capability response does not match the suspended TLS operation.
+    case invalidCapabilityResponse(reason: String)
 }

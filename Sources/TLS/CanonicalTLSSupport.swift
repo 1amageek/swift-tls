@@ -145,6 +145,54 @@ struct CanonicalClientCertificateValidator: TLS13ClientCertificateValidating {
 }
 
 enum CanonicalTLSConversion {
+    static func preferredCertificateType(
+        _ values: [TLSCertificateTypes.CertificateType],
+        role: String
+    ) throws(TLSError) -> TLSCertificateTypes.CertificateType {
+        guard let value = values.first else {
+            throw .invalidConfiguration(reason: "\(role) certificate types are empty")
+        }
+        return value
+    }
+
+    static func singleCertificateType(
+        _ values: [TLSCertificateTypes.CertificateType],
+        role: String
+    ) throws(TLSError) -> TLSCertificateTypes.CertificateType {
+        guard values.count == 1, let value = values.first else {
+            throw .invalidConfiguration(
+                reason: "\(role) requires exactly one certificate type"
+            )
+        }
+        return value
+    }
+
+    static func toTLS13CertificateType(
+        _ value: TLSCertificateTypes.CertificateType
+    ) -> TLS13CertificateType {
+        switch value {
+        case .x509: .x509
+        case .rawPublicKey: .rawPublicKey
+        }
+    }
+
+    static func toTLS13CertificateTypes(
+        _ values: [TLSCertificateTypes.CertificateType]
+    ) throws(TLSError) -> ContiguousArray<TLS13CertificateType> {
+        guard !values.isEmpty else {
+            throw .invalidConfiguration(reason: "certificate types are empty")
+        }
+        var result = ContiguousArray<TLS13CertificateType>()
+        result.reserveCapacity(values.count)
+        for value in values {
+            let coreValue = toTLS13CertificateType(value)
+            if !result.contains(coreValue) {
+                result.append(coreValue)
+            }
+        }
+        return result
+    }
+
     static func string(from bytes: Span<UInt8>) -> String {
         var value: [UInt8] = []
         value.reserveCapacity(bytes.count)
@@ -215,6 +263,51 @@ enum CanonicalTLSConversion {
         }
     }
 
+    static func localCredentialProvider(
+        _ identity: TLSIdentity,
+        certificateType: TLSCertificateTypes.CertificateType
+    ) throws(TLSError) -> CanonicalTLSLocalCredentialProvider {
+        guard certificateType == .rawPublicKey,
+            identity.certificateChain.isEmpty,
+            let rawPublicKey = identity.rawPublicKey
+        else {
+            throw .invalidConfiguration(
+                reason: "raw-public-key identity requires SubjectPublicKeyInfo and no X.509 chain"
+            )
+        }
+        guard !identity.credentialIdentifier.isEmpty else {
+            throw .invalidConfiguration(reason: "credential identifier is empty")
+        }
+        let signingKey = try signingKey(identity)
+        let subjectPublicKeyInfo: SubjectPublicKeyInfo
+        do {
+            subjectPublicKeyInfo = try SubjectPublicKeyInfo(der: rawPublicKey.der.span)
+            let derivedPublicKey = try signingKey.publicKeyBytes()
+            let matches = subjectPublicKeyInfo.withPublicKeyBytes { encoded in
+                ConstantTime.equal(encoded, derivedPublicKey.span)
+            }
+            guard matches else {
+                throw TLSError.invalidConfiguration(
+                    reason: "raw-public-key identity does not match its private key"
+                )
+            }
+        } catch let error as TLSError {
+            throw error
+        } catch {
+            throw .invalidConfiguration(reason: "invalid raw-public-key identity")
+        }
+        let credential = TLSCredential(
+            identifier: identity.credentialIdentifier,
+            rawPublicKey: rawPublicKey,
+            certificateType: .rawPublicKey,
+            signatureScheme: TLSSignatureScheme(rawValue: signingKey.signatureScheme.rawValue)
+        )
+        return CanonicalTLSLocalCredentialProvider(
+            credential: credential,
+            signingKey: consume signingKey
+        )
+    }
+
     static func verificationInstant() throws(TLSError) -> VerificationInstant {
         do {
             return try SystemWallClock().now()
@@ -254,11 +347,124 @@ enum CanonicalTLSConversion {
     }
 }
 
+/// Local raw-public-key capability provider. It performs only deterministic
+/// credential selection and signing; peer trust remains an explicit caller
+/// decision and is never accepted implicitly.
+struct CanonicalTLSLocalCredentialProvider: ~Copyable, Sendable {
+    let credential: TLSCredential
+    let signingKey: TLS13SigningKey
+
+    init(credential: TLSCredential, signingKey: consuming TLS13SigningKey) {
+        self.credential = credential
+        self.signingKey = consume signingKey
+    }
+
+    borrowing func response(
+        for request: TLSCapabilityRequest
+    ) throws(TLSError) -> TLSCapabilityResponse? {
+        switch request {
+        case .peerTrustEvaluation:
+            return nil
+        case .credentialSelection(let request):
+            guard request.certificateTypes.contains(credential.certificateType),
+                request.signatureSchemes.contains(credential.signatureScheme)
+            else {
+                return .credentialUnavailable(request.token)
+            }
+            return .credentialSelected(request.token, credential)
+        case .signature(let request):
+            guard request.credentialIdentifier == credential.identifier,
+                request.signatureScheme == credential.signatureScheme
+            else {
+                return .signatureRejected(request.token)
+            }
+            do {
+                let signature = try signingKey.sign(message: request.message.span)
+                return .signature(request.token, Array(signature))
+            } catch {
+                throw .internalError(reason: "local signing operation failed")
+            }
+        }
+    }
+}
+
+/// Validates configured RFC 7250 trust anchors at the capability boundary.
+/// The TLS mechanism still verifies the CertificateVerify proof; this provider
+/// only decides whether the presented SubjectPublicKeyInfo is trusted.
+struct CanonicalTLSPeerTrustProvider: Sendable, Hashable {
+    let trustedKeys: [Certificate]
+    let acceptsAnyKey: Bool
+
+    init(roots: [Certificate], verifyPeer: Bool) throws(TLSError) {
+        guard !verifyPeer || !roots.isEmpty else {
+            throw .invalidConfiguration(reason: "raw-public-key trust roots are empty")
+        }
+        for root in roots {
+            do {
+                _ = try SubjectPublicKeyInfo(der: root.der.span)
+            } catch {
+                throw .invalidConfiguration(
+                    reason: "raw-public-key trust root is not SubjectPublicKeyInfo"
+                )
+            }
+        }
+        self.trustedKeys = roots
+        self.acceptsAnyKey = !verifyPeer
+    }
+
+    func response(
+        for request: TLSCapabilityRequest
+    ) -> TLSCapabilityResponse? {
+        guard case .peerTrustEvaluation(let request) = request,
+            request.certificateType == .rawPublicKey,
+            request.certificates.count == 1
+        else {
+            return nil
+        }
+        let presented = request.certificates[0]
+        let trusted = acceptsAnyKey || trustedKeys.contains { trusted in
+            Self.matches(trusted, presented)
+        }
+        return trusted
+            ? .peerTrustAccepted(request.token)
+            : .peerTrustRejected(request.token)
+    }
+
+    private static func matches(
+        _ trusted: Certificate,
+        _ presented: Certificate
+    ) -> Bool {
+        do {
+            let trustedKey = try SubjectPublicKeyInfo(der: trusted.der.span)
+            let presentedKey = try SubjectPublicKeyInfo(der: presented.der.span)
+            guard trustedKey.algorithm == presentedKey.algorithm else {
+                return false
+            }
+            return trustedKey.withPublicKeyBytes { trustedBytes in
+                presentedKey.withPublicKeyBytes { presentedBytes in
+                    ConstantTime.equal(trustedBytes, presentedBytes)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+}
+
 struct CanonicalTLSClientFactory: ~Copyable, Sendable {
     let handshake: TLS13ClientHandshake
     let capture: CanonicalPeerCapture
+    let verificationInstant: VerificationInstant
+    let localCredentialProvider: CanonicalTLSLocalCredentialProvider?
+    let peerTrustProvider: CanonicalTLSPeerTrustProvider?
+    let peerCertificateValidator: (any TLS13ServerCertificateValidating)?
+    let certificateValidator:
+        (@Sendable ([Certificate]) throws(TLSError) -> PeerIdentity?)?
 
-    init(configuration: TLSConfiguration) throws(TLSError) {
+    init(
+        configuration: TLSConfiguration,
+        resumptionState: TLSResumptionState? = nil
+    ) throws(TLSError) {
         let instant = try CanonicalTLSConversion.verificationInstant()
         let random = try CanonicalTLSConversion.randomBytes(count: 32)
         let ephemeral: X25519PrivateKey
@@ -268,15 +474,77 @@ struct CanonicalTLSClientFactory: ~Copyable, Sendable {
             throw .invalidConfiguration(reason: "ephemeral key generation failed")
         }
         let capture = CanonicalPeerCapture()
-        let pathValidator = try CanonicalTLSValidators.server(
-            configuration: configuration
+        let peerCertificateType = try CanonicalTLSConversion.singleCertificateType(
+            configuration.certificateTypes.peer,
+            role: "peer"
         )
+        let localCertificateType = try CanonicalTLSConversion.singleCertificateType(
+            configuration.certificateTypes.local,
+            role: "local"
+        )
+        let pathValidator: (any TLS13ServerCertificateValidating)?
+        var peerTrustProvider: CanonicalTLSPeerTrustProvider? = nil
+        if peerCertificateType == .x509 {
+            guard configuration.trustRoots.rawPublicKeys.isEmpty else {
+                throw .invalidConfiguration(
+                    reason: "raw-public-key roots require raw-public-key peer certificates"
+                )
+            }
+            pathValidator = try CanonicalTLSValidators.server(
+                configuration: configuration
+            )
+        } else {
+            guard configuration.trustRoots.x509Roots.isEmpty else {
+                throw .invalidConfiguration(
+                    reason: "X.509 roots cannot validate raw-public-key certificates"
+                )
+            }
+            if !configuration.trustRoots.rawPublicKeys.isEmpty {
+                guard configuration.verifyPeer else {
+                    throw .invalidConfiguration(
+                        reason: "raw-public-key trust roots require verifyPeer"
+                    )
+                }
+                peerTrustProvider = try CanonicalTLSPeerTrustProvider(
+                    roots: configuration.trustRoots.rawPublicKeys,
+                    verifyPeer: configuration.verifyPeer
+                )
+            } else if !configuration.verifyPeer {
+                peerTrustProvider = try CanonicalTLSPeerTrustProvider(
+                    roots: [],
+                    verifyPeer: false
+                )
+            }
+            pathValidator = nil
+        }
         let protocols = try CanonicalTLSConversion.applicationProtocols(
             configuration.alpnProtocols
         )
         let serverNameBytes = configuration.serverName?.utf8Array
+        let coreResumptionState: TLS13ResumptionState?
+        if let resumptionState {
+            coreResumptionState = try resumptionState.takeCore()
+        } else {
+            coreResumptionState = nil
+        }
         let clientIdentity: TLS13ClientIdentity?
-        if let identity = configuration.identity {
+        var localCredentialProvider: CanonicalTLSLocalCredentialProvider? = nil
+        let externalClientCredential: TLS13ExternalClientCredential?
+        if localCertificateType == .rawPublicKey,
+            let identity = configuration.identity
+        {
+            externalClientCredential = TLS13ExternalClientCredential(certificateType: .rawPublicKey)
+            localCredentialProvider = try CanonicalTLSConversion.localCredentialProvider(
+                identity,
+                certificateType: localCertificateType
+            )
+            clientIdentity = nil
+        } else if localCertificateType == .rawPublicKey {
+            // Do not advertise a client certificate type when there is no
+            // local credential to satisfy a future CertificateRequest.
+            externalClientCredential = nil
+            clientIdentity = nil
+        } else if let identity = configuration.identity {
             do {
                 clientIdentity = try TLS13ClientIdentity(
                     certificateEntries: CanonicalTLSConversion.certificateEntries(
@@ -288,39 +556,134 @@ struct CanonicalTLSClientFactory: ~Copyable, Sendable {
             } catch {
                 throw .invalidConfiguration(reason: "invalid TLS client identity")
             }
+            externalClientCredential = nil
         } else {
             clientIdentity = nil
+            externalClientCredential = nil
         }
         let handshake: TLS13ClientHandshake
         do {
-            handshake = try TLS13ClientHandshake(
-                random: random.span,
-                ephemeralKey: ephemeral,
-                certificateValidator: CanonicalServerCertificateValidator(
-                    pathValidator: pathValidator,
-                    callback: configuration.certificateValidator,
-                    capture: capture
-                ),
-                clientIdentity: clientIdentity,
-                applicationProtocols: protocols,
-                serverName: serverNameBytes?.span,
-                verificationInstant: instant
-            )
+            if peerCertificateType == .rawPublicKey {
+                handshake = try TLS13ClientHandshake(
+                    random: random.span,
+                    ephemeralKey: ephemeral,
+                    externalServerTrust: TLS13ExternalServerTrust(
+                        certificateType: .rawPublicKey
+                    ),
+                    clientIdentity: clientIdentity,
+                    externalClientCredential: externalClientCredential,
+                    applicationProtocols: protocols,
+                    serverName: serverNameBytes?.span,
+                    verificationInstant: instant,
+                    resumptionState: consume coreResumptionState
+                )
+            } else if configuration.certificateValidator != nil {
+                handshake = try TLS13ClientHandshake(
+                    random: random.span,
+                    ephemeralKey: ephemeral,
+                    externalServerTrust: TLS13ExternalServerTrust(
+                        certificateType: .x509
+                    ),
+                    clientIdentity: clientIdentity,
+                    externalClientCredential: externalClientCredential,
+                    applicationProtocols: protocols,
+                    serverName: serverNameBytes?.span,
+                    verificationInstant: instant,
+                    resumptionState: consume coreResumptionState
+                )
+            } else {
+                handshake = try TLS13ClientHandshake(
+                    random: random.span,
+                    ephemeralKey: ephemeral,
+                    certificateValidator: CanonicalServerCertificateValidator(
+                        pathValidator: pathValidator,
+                        callback: configuration.certificateValidator,
+                        capture: capture
+                    ),
+                    clientIdentity: clientIdentity,
+                    externalClientCredential: externalClientCredential,
+                    applicationProtocols: protocols,
+                    serverName: serverNameBytes?.span,
+                    verificationInstant: instant,
+                    resumptionState: consume coreResumptionState
+                )
+            }
         } catch {
             throw .invalidConfiguration(reason: "TLS client initialization failed")
         }
         self.handshake = handshake
         self.capture = capture
+        self.verificationInstant = instant
+        self.localCredentialProvider = localCredentialProvider
+        self.peerTrustProvider = peerTrustProvider
+        self.peerCertificateValidator = pathValidator
+        self.certificateValidator = configuration.certificateValidator
     }
 }
 
 struct CanonicalTLSServerFactory: ~Copyable, Sendable {
     let handshake: TLS13ServerHandshake
     let capture: CanonicalPeerCapture
+    let verificationInstant: VerificationInstant
+    let localCredentialProvider: CanonicalTLSLocalCredentialProvider?
+    let peerTrustProvider: CanonicalTLSPeerTrustProvider?
+    let peerCertificateValidator: (any TLS13ClientCertificateValidating)?
+    let certificateValidator:
+        (@Sendable ([Certificate]) throws(TLSError) -> PeerIdentity?)?
 
-    init(configuration: TLSConfiguration) throws(TLSError) {
-        guard let identity = configuration.identity else {
-            throw .invalidConfiguration(reason: "server identity is required")
+    init(
+        configuration: TLSConfiguration,
+        resumptionState: TLSResumptionState? = nil
+    ) throws(TLSError) {
+        let resumptionIdentity: ContiguousArray<UInt8>
+        let resumptionPSK: ContiguousArray<UInt8>
+        let hasResumptionState = resumptionState != nil
+        if let resumptionState {
+            resumptionIdentity = try resumptionState.copyTicketBytes()
+            resumptionPSK = try resumptionState.consumePSKBytes()
+        } else {
+            resumptionIdentity = []
+            resumptionPSK = []
+        }
+        let resumptionIssuedAt = resumptionState?.issuedAt
+        let resumptionLifetime = resumptionState?.lifetime
+        let resumptionAgeAdd = resumptionState?.ageAdd
+        let resumptionMaximumEarlyDataByteCount =
+            resumptionState?.maximumEarlyDataByteCount ?? 0
+        let resumptionApplicationProtocol = resumptionState?.applicationProtocol
+        let localCertificateType = try CanonicalTLSConversion.preferredCertificateType(
+            configuration.certificateTypes.local,
+            role: "local"
+        )
+        let peerCertificateType = try CanonicalTLSConversion.singleCertificateType(
+            configuration.certificateTypes.peer,
+            role: "peer"
+        )
+        let identity = configuration.identity
+        if localCertificateType == .x509, identity == nil {
+            throw .invalidConfiguration(reason: "server X.509 identity is required")
+        }
+        if peerCertificateType == .rawPublicKey, !configuration.trustRoots.x509Roots.isEmpty {
+            throw .invalidConfiguration(
+                reason: "X.509 roots cannot validate a raw-public-key peer"
+            )
+        }
+        if !configuration.trustRoots.rawPublicKeys.isEmpty {
+            guard peerCertificateType == .rawPublicKey else {
+                throw .invalidConfiguration(
+                    reason: "raw-public-key trust roots require raw-public-key peer certificates"
+                )
+            }
+            guard configuration.requireClientCertificate else {
+                throw .invalidConfiguration(
+                    reason: "raw-public-key trust roots require client certificates"
+                )
+            }
+            guard configuration.verifyPeer else {
+                throw .invalidConfiguration(
+                    reason: "raw-public-key trust roots require verifyPeer"
+                )
+            }
         }
         let instant = try CanonicalTLSConversion.verificationInstant()
         let random = try CanonicalTLSConversion.randomBytes(count: 32)
@@ -330,22 +693,58 @@ struct CanonicalTLSServerFactory: ~Copyable, Sendable {
         } catch {
             throw .invalidConfiguration(reason: "ephemeral key generation failed")
         }
-        let entries = try CanonicalTLSConversion.certificateEntries(
-            identity.certificateChain
-        )
-        let signingKey = try CanonicalTLSConversion.signingKey(identity)
         let capture = CanonicalPeerCapture()
-        let clientAuthentication: TLS13ClientAuthenticationConfiguration?
-        if configuration.requireClientCertificate {
-            let validator = try CanonicalTLSValidators.client(
-                configuration: configuration,
-                capture: capture
+        let peerTrustProvider: CanonicalTLSPeerTrustProvider?
+        if !configuration.trustRoots.rawPublicKeys.isEmpty {
+            peerTrustProvider = try CanonicalTLSPeerTrustProvider(
+                roots: configuration.trustRoots.rawPublicKeys,
+                verifyPeer: configuration.verifyPeer
             )
-            clientAuthentication = TLS13ClientAuthenticationConfiguration(
-                requirement: .required,
-                validator: validator
+        } else if peerCertificateType == .rawPublicKey && !configuration.verifyPeer {
+            peerTrustProvider = try CanonicalTLSPeerTrustProvider(
+                roots: [],
+                verifyPeer: false
             )
         } else {
+            peerTrustProvider = nil
+        }
+        let clientAuthentication: TLS13ClientAuthenticationConfiguration?
+        let peerCertificateValidator: (any TLS13ClientCertificateValidating)?
+        if configuration.requireClientCertificate {
+            if peerCertificateType == .rawPublicKey {
+                peerCertificateValidator = nil
+                clientAuthentication = TLS13ClientAuthenticationConfiguration(
+                    externalTrust: TLS13ExternalClientTrust(
+                        requirement: .required,
+                        certificateType: .rawPublicKey
+                    )
+                )
+            } else if configuration.certificateValidator != nil {
+                let validator = try CanonicalTLSValidators.client(
+                    configuration: configuration,
+                    capture: capture,
+                    includePolicyCallback: false
+                )
+                peerCertificateValidator = validator
+                clientAuthentication = TLS13ClientAuthenticationConfiguration(
+                    externalTrust: TLS13ExternalClientTrust(
+                        requirement: .required,
+                        certificateType: .x509
+                    )
+                )
+            } else {
+                let validator = try CanonicalTLSValidators.client(
+                    configuration: configuration,
+                    capture: capture
+                )
+                peerCertificateValidator = nil
+                clientAuthentication = TLS13ClientAuthenticationConfiguration(
+                    requirement: .required,
+                    validator: validator
+                )
+            }
+        } else {
+            peerCertificateValidator = nil
             clientAuthentication = nil
         }
         let selector: ServerPreferredTLS13ApplicationProtocolSelector?
@@ -362,22 +761,101 @@ struct CanonicalTLSServerFactory: ~Copyable, Sendable {
                 throw .invalidConfiguration(reason: "invalid ALPN configuration")
             }
         }
-        let handshake: TLS13ServerHandshake
+        var localCredentialProvider: CanonicalTLSLocalCredentialProvider? = nil
         do {
-            handshake = try TLS13ServerHandshake(
-                random: random.span,
-                ephemeralKey: ephemeral,
-                certificateEntries: entries,
-                signingKey: signingKey,
-                verificationInstant: instant,
-                applicationProtocolSelector: selector,
-                clientAuthentication: clientAuthentication
+            // The canonical constructor copies the resumption bytes before it
+            // returns. The pointers are used only for that synchronous call;
+            // the backing arrays remain alive for the entire initializer.
+            let identityPointer = resumptionIdentity.withUnsafeBufferPointer {
+                $0.baseAddress
+            }
+            let pskPointer = resumptionPSK.withUnsafeBufferPointer {
+                $0.baseAddress
+            }
+            let handshake: TLS13ServerHandshake
+            if localCertificateType == .rawPublicKey {
+                if let identity {
+                    localCredentialProvider = try CanonicalTLSConversion.localCredentialProvider(
+                        identity,
+                        certificateType: localCertificateType
+                    )
+                }
+                handshake = try TLS13ServerHandshake(
+                    random: random.span,
+                    ephemeralKey: ephemeral,
+                    externalServerCredential: TLS13ExternalServerCredential(
+                        certificateTypes: try CanonicalTLSConversion.toTLS13CertificateTypes(
+                            configuration.certificateTypes.local
+                        )
+                    ),
+                    verificationInstant: instant,
+                    applicationProtocolSelector: selector,
+                    clientAuthentication: clientAuthentication,
+                    resumptionIdentity: hasResumptionState
+                        ? Span(_unsafeStart: identityPointer!, count: resumptionIdentity.count)
+                        : nil,
+                    resumptionPSK: hasResumptionState
+                        ? Span(_unsafeStart: pskPointer!, count: resumptionPSK.count)
+                        : nil,
+                    resumptionIssuedAt: resumptionIssuedAt,
+                    resumptionLifetime: resumptionLifetime,
+                    resumptionAgeAdd: resumptionAgeAdd,
+                    resumptionMaximumEarlyDataByteCount:
+                        resumptionMaximumEarlyDataByteCount,
+                    resumptionApplicationProtocol: resumptionApplicationProtocol
+                )
+            } else {
+                guard let identity else {
+                    throw TLSError.invalidConfiguration(
+                        reason: "server X.509 identity is required"
+                    )
+                }
+                let entries = try CanonicalTLSConversion.certificateEntries(
+                    identity.certificateChain
+                )
+                let signingKey = try CanonicalTLSConversion.signingKey(identity)
+                handshake = try TLS13ServerHandshake(
+                    random: random.span,
+                    ephemeralKey: ephemeral,
+                    certificateEntries: entries,
+                    signingKey: signingKey,
+                    verificationInstant: instant,
+                    applicationProtocolSelector: selector,
+                    clientAuthentication: clientAuthentication,
+                    resumptionIdentity: hasResumptionState
+                        ? Span(_unsafeStart: identityPointer!, count: resumptionIdentity.count)
+                        : nil,
+                    resumptionPSK: hasResumptionState
+                        ? Span(_unsafeStart: pskPointer!, count: resumptionPSK.count)
+                        : nil,
+                    resumptionIssuedAt: resumptionIssuedAt,
+                    resumptionLifetime: resumptionLifetime,
+                    resumptionAgeAdd: resumptionAgeAdd,
+                    resumptionMaximumEarlyDataByteCount:
+                        resumptionMaximumEarlyDataByteCount,
+                    resumptionApplicationProtocol: resumptionApplicationProtocol
+                )
+            }
+            self.handshake = handshake
+        } catch let error as TLS13HandshakeEngineError {
+            throw .invalidConfiguration(
+                reason: "TLS server initialization failed: \(error)"
             )
         } catch {
+#if hasFeature(Embedded)
             throw .invalidConfiguration(reason: "TLS server initialization failed")
+#else
+            throw .invalidConfiguration(
+                reason: "TLS server initialization failed: \(String(describing: error))"
+            )
+#endif
         }
-        self.handshake = handshake
         self.capture = capture
+        self.verificationInstant = instant
+        self.localCredentialProvider = localCredentialProvider
+        self.peerTrustProvider = peerTrustProvider
+        self.peerCertificateValidator = peerCertificateValidator
+        self.certificateValidator = configuration.certificateValidator
     }
 }
 
@@ -406,8 +884,17 @@ enum CanonicalTLSValidators {
 
     static func client(
         configuration: TLSConfiguration,
-        capture: CanonicalPeerCapture
+        capture: CanonicalPeerCapture,
+        includePolicyCallback: Bool = true
     ) throws(TLSError) -> any TLS13ClientCertificateValidating {
+        guard !configuration.verifyPeer
+            || !configuration.trustRoots.x509Roots.isEmpty
+            || configuration.certificateValidator != nil
+        else {
+            throw .invalidConfiguration(
+                reason: "verifyPeer requires client trust roots or a certificate validator"
+            )
+        }
         let path: (any TLS13ClientCertificateValidating)?
         if configuration.verifyPeer && !configuration.trustRoots.x509Roots.isEmpty {
             let anchors = try parseAnchors(configuration.trustRoots.x509Roots)
@@ -423,7 +910,7 @@ enum CanonicalTLSValidators {
         }
         return CanonicalClientCertificateValidator(
             pathValidator: path,
-            callback: configuration.certificateValidator,
+            callback: includePolicyCallback ? configuration.certificateValidator : nil,
             capture: capture
         )
     }

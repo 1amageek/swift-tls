@@ -21,13 +21,27 @@ public struct TLSIdentity: Sendable {
     public let keyType: KeyType
 
     /// The certificate chain to present (leaf first). For raw-public-key
-    /// authentication (RFC 7250) this may be empty and the public key is derived
-    /// from the signing key.
+    /// authentication (RFC 7250) this is empty and `rawPublicKey` is required.
     public let certificateChain: [Certificate]
 
-    public init(privateKey: [UInt8], keyType: KeyType, certificateChain: [Certificate]) {
+    /// SubjectPublicKeyInfo DER used when the identity is presented as an
+    /// RFC 7250 raw public key.
+    public let rawPublicKey: Certificate?
+
+    /// Stable identifier used by the external credential capability boundary.
+    public let credentialIdentifier: [UInt8]
+
+    public init(
+        privateKey: [UInt8],
+        keyType: KeyType,
+        certificateChain: [Certificate],
+        rawPublicKey: Certificate? = nil,
+        credentialIdentifier: [UInt8] = [0x01]
+    ) {
         self.privateKey = privateKey
         self.keyType = keyType
         self.certificateChain = certificateChain
+        self.rawPublicKey = rawPublicKey
+        self.credentialIdentifier = credentialIdentifier
     }
 }

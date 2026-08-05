@@ -40,13 +40,13 @@ for the ownership contract.
 - Cipher suites: `AES-128-GCM-SHA256`, `AES-256-GCM-SHA384`, `ChaCha20-Poly1305-SHA256`
 - Key exchange: X25519, P-256, P-384
 - HelloRetryRequest
-- PSK / session resumption with 0-RTT early data
 - Mutual TLS (mTLS)
 - The CertificateVerify proof-of-possession signature is **always verified** in the core whenever the peer presents a certificate; the `verifyPeer` configuration flag controls **only** X.509 chain / trust-anchor (or RFC 7250 raw-key) validation, never the handshake signature
 - X.509 certificate chain validation (host) and RFC 7250 raw-public-key authentication (host + Embedded)
-- Signature schemes: ECDSA P-256 / P-384 and Ed25519 only — RSA is not advertised or verified
-- Key Update
+- Facade identity schemes: ECDSA P-256 and Ed25519; the current public facade does not import P-384 private keys. External capability requests expose only the schemes advertised by the canonical `swift-ssl` handshake.
 - Transport-agnostic, sans-IO design (TCP, QUIC, etc.)
+- TLS 1.3 NewSessionTicket issuance and one-shot PSK resumption state for
+  stream clients and servers
 - `Span<UInt8>` input lets adapters feed byte views without pre-materializing `Data`
 - Swift 6 strict concurrency (`Sendable`, lock-based facade)
 
@@ -55,7 +55,7 @@ for the ownership contract.
 - Full DTLS 1.2 handshake (client and server)
 - Cipher suite: `ECDHE-ECDSA-AES128-GCM-SHA256`
 - Mutual authentication: the server requires/verifies a client certificate via `DTLSConfiguration(identity:requireClientCertificate:)`; the client's CertificateVerify proof-of-possession is verified before completion
-- Cookie exchange for DoS protection (RFC 6347 §4.2.1); HelloVerifyRequest cookies are bound to the client transport address and minted/verified with a rotating secret (fail-closed)
+- Cookie exchange for DoS protection (RFC 6347 §4.2.1); HelloVerifyRequest cookies are bound to the client transport address and minted/verified with an association-lifetime random secret (fail-closed)
 - Anti-replay protection with 64-bit sliding window (RFC 6347 §4.1.2.6); bad-MAC records are discarded while datagram processing continues
 - Non-fatal record anomalies (bad MAC, replay, too-old, malformed) are surfaced via `DTLSOutput.anomalies` instead of being silently swallowed
 - Handshake fragment reassembly is bounded to resist memory-exhaustion DoS
@@ -273,10 +273,40 @@ Common methods. **TLS** (`TLSClient` / `TLSServer`) methods are `async`; **DTLS*
 | `startHandshake()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
 | `receive(_:)` | `async throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
 | `send(_:)` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `sendNewSessionTicket(...)` | `throws(TLSError) -> TLSIssuedSessionTicket` (server) | — |
+| `requestKeyUpdate(requestPeerUpdate:)` | `async throws(TLSError) -> [UInt8]` | — |
 | `close()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
 | `handleTimeout()` | — | `throws(TLSError) -> [[UInt8]]` (flight retransmission) |
 
 `receive(_:)` takes a `Span<UInt8>`. `DTLSServer.receive(_:from:)` additionally takes `from remoteAddress: Span<UInt8>` for the HelloVerifyRequest cookie binding.
+
+Stream sessions also expose `receiveStep(_:)` and `resume(_:)` for capability
+requests that must be answered by the caller (trust evaluation, credential
+selection, or signing). A normal configured raw-public-key provider resolves
+those requests internally; callers only need this pair when they own the policy
+or private-key operation.
+
+`TLSServer.sendNewSessionTicket(...)` returns the encrypted record bytes and the
+paired `TLSResumptionState`. Deliver the bytes to the client. The client reports
+`TLSOutput.sessionTicketReceived` and exposes its own state through
+`TLSClient.takeResumptionState()`. Construct the next client and server session
+with their respective states; each state is one-shot and is protected by its own
+`Mutex` until consumed.
+
+```text
+first server ── sendNewSessionTicket ──> ticket bytes ──> first client
+      │                                      │
+      └─ server state                         └─ client state
+             │                                      │
+       next TLSServer                         next TLSClient
+```
+
+When an external X.509 policy callback is configured, its canonical path
+validator and application policy callback are snapshotted under the session
+lock, then invoked outside that lock. The TLS state machine is resumed under
+the lock only after the callback response is converted into a typed canonical
+capability response. Configurations using only built-in trust anchors keep
+that validator inside the canonical `swift-ssl` engine path.
 
 Connection state and peer material:
 
@@ -323,7 +353,7 @@ Tier 3  POLICY ADAPTERS (this package)
 | §4.1.2.6 | Anti-replay window (64-bit) | Yes |
 | §4.1.2.6 | MAC verification before window update | Yes |
 | §4.1.2.7 | Invalid record handling | Yes — discarded (datagram continues; surfaced via `anomalies`) |
-| §4.2.1 | Cookie exchange (DoS protection) | Yes — cookie bound to client address; rotating secret |
+| §4.2.1 | Cookie exchange (DoS protection) | Yes — cookie bound to client address; association-lifetime random secret |
 | §4.2.3 | Handshake fragment reassembly | Yes — bounded (per-message + concurrent limits) |
 | §4.2.4 | Flight retransmission | Yes — exponential backoff |
 
@@ -332,8 +362,9 @@ Tier 3  POLICY ADAPTERS (this package)
 | Requirement | Status |
 |-------------|--------|
 | CertificateVerify proof-of-possession always verified | Yes — in-core, independent of `verifyPeer` (§4.4.3) |
+| KeyUpdate request/response | Yes — both directions rotate application traffic keys (§4.6.3) |
 | Fatal alert terminates connection | Yes |
-| Data after close_notify ignored | Yes |
+| Data after close_notify ignored | Yes — facade marks the peer-close transition terminal |
 
 ## References
 

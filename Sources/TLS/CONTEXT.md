@@ -16,7 +16,7 @@ backward-compatibility obligation to the old `Data` / `TLSConnection` API.
   and correlated capability suspension/resumption.
 - The intended public profiles are `TLS` for reliable streams, `DTLS` for
   datagrams, and `QUICTLS` for ordered encryption-level-qualified QUIC handshake
-  bytes, sharing contracts from `TLSSessionCore`.
+  bytes, sharing vocabulary from `TLSTypes`.
 - `swift-ssl` is the canonical owner of cryptography, PKI, wire semantics,
   transcript, key schedule, record protection, and TLS/DTLS handshake
   mechanisms. A completed facade transition delegates to `swift-ssl` and never
@@ -58,6 +58,10 @@ The workspace source of truth is
 - TLS facade methods are `async` (source compatibility only — the engine never
   suspends, it is lock-bound not I/O-bound, so they complete promptly). DTLS facade
   methods are synchronous. Keep this asymmetry; it is intentional.
+- The stream facade accepts handshake records, application data, post-handshake
+  transitions, and authenticated peer alerts through the classified
+  `swift-ssl` record contract. A peer `close_notify` is terminal at the facade
+  boundary; do not infer close state from a generic record error.
 - The canonical `swift-ssl` mechanisms are **Embedded-clean** and use typed
   throws. CertificateVerify signing, certificate parsing, trust evaluation,
   record protection, and key derivation all resolve through `SSLCrypto` and
@@ -65,6 +69,16 @@ The workspace source of truth is
 - A consumer may inject a typed PeerID/application policy callback after the
   cryptographic proof succeeds. That policy callback cannot replace signature
   verification, certificate parsing, or key derivation.
+- X.509 path validation is a canonical engine operation. When an external X.509
+  policy callback is configured, the facade snapshots the canonical validator
+  and callback under `Mutex`, invokes that external capability path outside the
+  lock, and resumes the exact suspended transition only after a typed response
+  is built. Configurations using only built-in trust anchors keep validation in
+  the canonical engine path.
+- Stream TLS exposes TLS 1.3 `NewSessionTicket` as encrypted output paired with
+  one-shot `TLSResumptionState`. Client and server states are distinct: the
+  client derives its state from the received ticket, while the server retains
+  the ticket identity and PSK needed to accept one resumption attempt.
 
 ## Security invariants (must hold; tests guard them)
 
@@ -75,8 +89,8 @@ The workspace source of truth is
 - The injected `validateCertificate` runs AFTER the in-core possession check and is
   **fail-closed**: a throw aborts the handshake. `peerIdentity` therefore never
   surfaces an unverified peer.
-- **DTLS cookie / HelloVerifyRequest is fail-closed.** Cookies are HMAC over a
-  per-process random secret, bound to the client transport address; a presented
+- **DTLS cookie / HelloVerifyRequest is fail-closed.** Cookies are HMAC over an
+  association-lifetime random secret, bound to the client transport address; a presented
   cookie that fails verification is rejected by the core. Do not add a path that
   accepts a missing/invalid cookie.
 - **Anti-replay window** (RFC 6347 §4.1.2.6): MAC is verified BEFORE the window is

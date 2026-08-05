@@ -1,3 +1,4 @@
+import SSLCore
 import SSLTLS
 import Synchronization
 
@@ -9,10 +10,27 @@ public final class TLSClient: Sendable {
     private let engine: Mutex<TLSClientStorage>
     private let capture: CanonicalPeerCapture
 
-    public init(configuration: TLSConfiguration = .init()) throws(TLSError) {
-        let factory = try configuration.makeClientFactory()
+    public init(
+        configuration: TLSConfiguration = .init(),
+        resumptionState: TLSResumptionState? = nil
+    ) throws(TLSError) {
+        let factory = try configuration.makeClientFactory(
+            resumptionState: resumptionState
+        )
         let handshake = consume factory.handshake
-        self.engine = Mutex(TLSClientStorage(handshake: handshake))
+        let localCredentialProvider = consume factory.localCredentialProvider
+        let peerTrustProvider = factory.peerTrustProvider
+        self.engine = Mutex(
+            TLSClientStorage(
+                handshake: handshake,
+                verificationInstant: factory.verificationInstant,
+                localCredentialProvider: consume localCredentialProvider,
+                peerTrustProvider: peerTrustProvider,
+                peerCertificateValidator: factory.peerCertificateValidator,
+                certificateValidator: factory.certificateValidator,
+                pendingResumptionState: nil
+            )
+        )
         self.capture = factory.capture
     }
 
@@ -24,15 +42,48 @@ public final class TLSClient: Sendable {
         return try CanonicalTLSProjection.bytesToSend(output)
     }
 
+    /// Feeds exactly one complete TLS record. The transport adapter owns record
+    /// framing and must split coalesced records before calling this method.
+    /// External trust, credential, and signing callbacks run outside the
+    /// session mutex and may suspend independently of the TLS state machine.
     public func receive(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
-        let output = try run { state throws(TLS13HandshakeEngineError) in
-            guard !state.closed else { throw .invalidState }
-            return try state.handshake.receive(bytes)
+        if engine.withLock({ $0.closed }) {
+            return TLSOutput()
         }
-        return try CanonicalTLSProjection.output(output)
+        let established = engine.withLock { $0.handshake.isEstablished }
+        if !established {
+            return try receiveHandshakeRecord(bytes)
+        }
+        return try receiveApplicationRecord(bytes)
+    }
+
+    /// Processes one complete TLS record and preserves a capability suspension.
+    /// Use this entry point when a peer-trust, credential, or signature request
+    /// must be answered by the caller.
+    public func receiveStep(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
+        return try runTransition { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.receiveRecordStep(bytes)
+        }
+    }
+
+    /// Resumes the exact suspended TLS transition identified by `response.token`.
+    public func resume(_ response: TLSCapabilityResponse) async throws(TLSError) -> TLSOutput {
+        guard !engine.withLock({ $0.closed }) else {
+            throw .connectionClosed
+        }
+        let verificationInstant = engine.withLock { $0.verificationInstant }
+        let coreResponse = try response.core(
+            verificationInstant: verificationInstant
+        )
+        return try runTransition { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.resume(coreResponse)
+        }
     }
 
     public func send(_ application: Span<UInt8>) async throws(TLSError) -> [UInt8] {
+        try requireEstablished()
         let output = try run { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }
             return try state.handshake.sendApplicationData(application)
@@ -40,7 +91,26 @@ public final class TLSClient: Sendable {
         return try CanonicalTLSProjection.bytesToSend(output)
     }
 
+    /// Requests a TLS 1.3 application traffic key update.
+    ///
+    /// The returned bytes must be written to the peer before subsequent
+    /// application data. If `requestPeerUpdate` is true, the peer is asked to
+    /// update its sending key as well; its response is handled by `receive(_:)`.
+    public func requestKeyUpdate(
+        requestPeerUpdate: Bool = false
+    ) async throws(TLSError) -> [UInt8] {
+        try requireEstablished()
+        let output = try run { state throws(TLS13HandshakeEngineError) in
+            guard !state.closed else { throw .invalidState }
+            return try state.handshake.requestKeyUpdate(
+                requestPeerUpdate: requestPeerUpdate
+            )
+        }
+        return try CanonicalTLSProjection.bytesToSend(output)
+    }
+
     public func close() async throws(TLSError) -> [UInt8] {
+        try requireEstablished()
         let output = try run { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }
             let output = try state.handshake.sendCloseNotify()
@@ -54,6 +124,13 @@ public final class TLSClient: Sendable {
         engine.withLock { $0.handshake.isEstablished && !$0.closed }
     }
 
+    /// Takes the most recently received NewSessionTicket state exactly once.
+    public func takeResumptionState() -> TLSResumptionState? {
+        engine.withLock { state in
+            state.pendingResumptionState.take()
+        }
+    }
+
     public var negotiatedALPN: String? {
         engine.withLock { state -> String? in
             guard let protocolValue = state.handshake.negotiatedApplicationProtocol else {
@@ -64,11 +141,25 @@ public final class TLSClient: Sendable {
     }
 
     public var peerCertificates: [[UInt8]]? {
-        capture.certificates?.map { $0.der }
+        guard engine.withLock({ $0.handshake.isEstablished }) else { return nil }
+        return capture.certificates?.map { $0.der }
     }
 
     public var peerIdentity: PeerIdentity? {
-        capture.identity
+        guard engine.withLock({ $0.handshake.isEstablished }) else { return nil }
+        return capture.identity
+    }
+
+    private func requireEstablished() throws(TLSError) {
+        let status = engine.withLock { state in
+            (closed: state.closed, established: state.handshake.isEstablished)
+        }
+        if status.closed {
+            throw .connectionClosed
+        }
+        guard status.established else {
+            throw .handshakeNotComplete
+        }
     }
 
     private func run<Result: Sendable>(
@@ -88,13 +179,235 @@ public final class TLSClient: Sendable {
 #endif
         }
     }
+
+    private func runTransition(
+        _ operation: (inout TLSClientStorage) throws(TLS13HandshakeEngineError)
+            -> TLS13StreamHandshakeTransition
+    ) throws(TLSError) -> TLSOutput {
+        do {
+            var transition = try engine.withLock { state in
+                guard !state.closed else { throw TLS13HandshakeEngineError.invalidState }
+                return try operation(&state)
+            }
+            while true {
+                switch consume transition {
+                case .output(let output):
+                    return try CanonicalTLSProjection.output(output)
+                case .suspended(let request, let output):
+                    let facadeRequest = TLSCapabilityRequest(core: request)
+                    guard let response = try resolveCapability(facadeRequest) else {
+                        let suspended = TLS13StreamHandshakeTransition.suspended(
+                            request,
+                            output
+                        )
+                        return try CanonicalTLSProjection.transition(consume suspended)
+                    }
+                    let verificationInstant = engine.withLock { $0.verificationInstant }
+                    let coreResponse = try response.core(
+                        verificationInstant: verificationInstant
+                    )
+                    transition = try engine.withLock { state in
+                        guard !state.closed else {
+                            throw TLS13HandshakeEngineError.invalidState
+                        }
+                        return try state.handshake.resume(coreResponse)
+                    }
+                }
+            }
+        } catch let error as TLS13HandshakeEngineError {
+            throw error.facadeError
+        } catch let error as TLSError {
+            throw error
+        } catch {
+#if hasFeature(Embedded)
+            throw .internalError(reason: "TLS engine failure")
+#else
+            throw .internalError(reason: String(describing: error))
+#endif
+        }
+    }
+
+    private func receiveHandshakeRecord(
+        _ bytes: Span<UInt8>
+    ) throws(TLSError) -> TLSOutput {
+        try runTransition { state throws(TLS13HandshakeEngineError) in
+            try state.handshake.receiveRecordStep(bytes)
+        }
+    }
+
+    private func receiveApplicationRecord(
+        _ bytes: Span<UInt8>
+    ) throws(TLSError) -> TLSOutput {
+        do {
+            let result = try engine.withLock { state -> TLS13StreamRecordTransition in
+                if state.closed { throw TLS13HandshakeEngineError.invalidState }
+                return try state.handshake.receiveApplicationRecordStep(bytes)
+            }
+            switch consume result {
+            case .applicationData(let applicationData):
+                return TLSOutput(
+                    applicationData: CanonicalTLSProjection.array(from: applicationData)
+                )
+            case .postHandshake(let transition):
+                return try resolvePostHandshake(consume transition)
+            case .sessionTicket(let resumptionState):
+                return storeResumptionState(
+                    TLSResumptionState(core: consume resumptionState)
+                )
+            case .alert(let alert):
+                return try engine.withLock { state in
+                    try handlePeerAlert(alert, state: &state)
+                }
+            }
+        } catch let error as TLSError {
+            throw error
+        } catch let error as TLS13HandshakeEngineError {
+            engine.withLock { $0.closed = true }
+            throw error.facadeError
+        } catch {
+#if hasFeature(Embedded)
+            throw .internalError(reason: "TLS engine failure")
+#else
+            throw .internalError(reason: String(describing: error))
+#endif
+        }
+    }
+
+    private func resolvePostHandshake(
+        _ initial: consuming TLS13StreamHandshakeTransition
+    ) throws(TLSError) -> TLSOutput {
+        do {
+            var transition = consume initial
+            while true {
+                switch consume transition {
+                case .output(let output):
+                    return try CanonicalTLSProjection.output(output)
+                case .suspended(let request, let output):
+                    let facadeRequest = TLSCapabilityRequest(core: request)
+                    guard let response = try resolveCapability(facadeRequest) else {
+                        let suspended = TLS13StreamHandshakeTransition.suspended(
+                            request,
+                            output
+                        )
+                        return try CanonicalTLSProjection.transition(consume suspended)
+                    }
+                    let verificationInstant = engine.withLock { $0.verificationInstant }
+                    let coreResponse = try response.core(
+                        verificationInstant: verificationInstant
+                    )
+                    transition = try engine.withLock { state in
+                        try state.handshake.resume(coreResponse)
+                    }
+                }
+            }
+        } catch let error as TLSError {
+            throw error
+        } catch let error as TLS13HandshakeEngineError {
+            engine.withLock { $0.closed = true }
+            throw error.facadeError
+        } catch {
+#if hasFeature(Embedded)
+            throw .internalError(reason: "TLS engine failure")
+#else
+            throw .internalError(reason: String(describing: error))
+#endif
+        }
+    }
+
+    private func resolveCapability(
+        _ request: TLSCapabilityRequest
+    ) throws(TLSError) -> TLSCapabilityResponse? {
+        switch request {
+        case .peerTrustEvaluation(let trustRequest):
+            let policy = engine.withLock { state in
+                (
+                    pathValidator: state.peerCertificateValidator,
+                    callback: state.certificateValidator,
+                    provider: state.peerTrustProvider
+                )
+            }
+            if let pathValidator = policy.pathValidator {
+                do {
+                    let serverName = trustRequest.coreRequest.serverName?.span
+                    _ = try pathValidator.validate(
+                        trustRequest.coreRequest.certificateMessage,
+                        serverName: serverName,
+                        at: trustRequest.verificationInstant
+                    )
+                } catch {
+                    return .peerTrustRejected(trustRequest.token)
+                }
+            }
+            if let callback = policy.callback {
+                let identity = try callback(trustRequest.certificates)
+                capture.record(trustRequest.certificates, identity: identity)
+            }
+            return policy.provider?.response(for: request)
+                ?? .peerTrustAccepted(trustRequest.token)
+        case .credentialSelection, .signature:
+            let result: Result<TLSCapabilityResponse?, TLSError> = engine.withLock { state in
+                do {
+                    return .success(
+                        try state.localCredentialProvider?.response(for: request)
+                    )
+                } catch let error as TLSError {
+                    return .failure(error)
+                } catch {
+                    return .failure(.internalError(reason: "local capability failed"))
+                }
+            }
+            return try result.get()
+        }
+    }
+
+    private func storeResumptionState(
+        _ resumptionState: TLSResumptionState
+    ) -> TLSOutput {
+        engine.withLock { state in
+            state.pendingResumptionState = resumptionState
+        }
+        return TLSOutput(sessionTicketReceived: true)
+    }
+
+    private func handlePeerAlert(
+        _ alert: TLSAlert,
+        state: inout TLSClientStorage
+    ) throws(TLSError) -> TLSOutput {
+        state.closed = true
+        if alert == .closeNotify {
+            return TLSOutput(peerClosed: true)
+        }
+        throw .fatalAlert(code: alert.rawValue, reason: "peer sent a TLS alert")
+    }
 }
 
 private struct TLSClientStorage: ~Copyable, Sendable {
     var handshake: TLS13ClientHandshake
+    let verificationInstant: VerificationInstant
+    let localCredentialProvider: CanonicalTLSLocalCredentialProvider?
+    let peerTrustProvider: CanonicalTLSPeerTrustProvider?
+    let peerCertificateValidator: (any TLS13ServerCertificateValidating)?
+    let certificateValidator:
+        (@Sendable ([Certificate]) throws(TLSError) -> PeerIdentity?)?
+    var pendingResumptionState: TLSResumptionState?
     var closed = false
 
-    init(handshake: consuming TLS13ClientHandshake) {
+    init(
+        handshake: consuming TLS13ClientHandshake,
+        verificationInstant: VerificationInstant,
+        localCredentialProvider: consuming CanonicalTLSLocalCredentialProvider?,
+        peerTrustProvider: CanonicalTLSPeerTrustProvider?,
+        peerCertificateValidator: (any TLS13ServerCertificateValidating)?,
+        certificateValidator:
+            (@Sendable ([Certificate]) throws(TLSError) -> PeerIdentity?)?,
+        pendingResumptionState: TLSResumptionState?
+    ) {
         self.handshake = handshake
+        self.verificationInstant = verificationInstant
+        self.localCredentialProvider = consume localCredentialProvider
+        self.peerTrustProvider = peerTrustProvider
+        self.peerCertificateValidator = peerCertificateValidator
+        self.certificateValidator = certificateValidator
+        self.pendingResumptionState = pendingResumptionState
     }
 }

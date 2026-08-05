@@ -55,11 +55,21 @@ public struct TLSConfiguration: Sendable {
 }
 
 extension TLSConfiguration {
-    func makeClientFactory() throws(TLSError) -> CanonicalTLSClientFactory {
-        try CanonicalTLSClientFactory(configuration: self)
+    func makeClientFactory(
+        resumptionState: TLSResumptionState? = nil
+    ) throws(TLSError) -> CanonicalTLSClientFactory {
+        try CanonicalTLSClientFactory(
+            configuration: self,
+            resumptionState: resumptionState
+        )
     }
 
-    func makeServerFactory() throws(TLSError) -> CanonicalTLSServerFactory {
-        try CanonicalTLSServerFactory(configuration: self)
+    func makeServerFactory(
+        resumptionState: TLSResumptionState? = nil
+    ) throws(TLSError) -> CanonicalTLSServerFactory {
+        try CanonicalTLSServerFactory(
+            configuration: self,
+            resumptionState: resumptionState
+        )
     }
 }

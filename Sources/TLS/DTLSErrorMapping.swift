@@ -14,11 +14,11 @@ extension TLSError {
     static func fromDTLSEngine(_ e: DTLSEngineError) -> TLSError {
         switch e {
         case .handshakeNotStarted:
-            return .internalError(reason: "DTLS handshake not started")
+            return .handshakeNotComplete
         case .handshakeNotComplete:
             return .handshakeNotComplete
         case .handshakeAlreadyStarted:
-            return .internalError(reason: "DTLS handshake already started")
+            return .protocolFailure(reason: "DTLS handshake already started")
         case .connectionClosed:
             return .connectionClosed
         case .protocolFailure(let reason):

@@ -11,7 +11,7 @@
 /// - `verifyPeerSignature` — extract SubjectPublicKeyInfo from an X.509 leaf or
 ///   parse an RFC-7250 raw public key via `P2PCoreDER`, then verify the DER
 ///   signature over `data`. Malformed entries fail closed.
-/// - `makeCookie`/`verifyCookie` — HMAC-SHA256 over a process-lifetime random
+/// - `makeCookie`/`verifyCookie` — HMAC-SHA256 over an association-lifetime random
 ///   cookie secret (the provider MAC); a presented cookie that fails verification is
 ///   rejected by the core.
 ///
@@ -80,7 +80,7 @@ extension DTLSConfiguration {
             try EmbeddedDTLSSeams.verifyPeerSignature(chain: chain, signature: signature, data: data)
         }
 
-        // HMAC-SHA256 cookie over a process-lifetime random secret (server only).
+        // HMAC-SHA256 cookie over an association-lifetime random secret (server only).
         // The same secret backs both make and verify; a presented cookie that fails
         // the MAC is rejected by the core (fail-closed).
         let cookieSecret = TLSCryptoProvider.random.randomBytes(32)

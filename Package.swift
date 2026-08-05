@@ -40,6 +40,7 @@ let cryptoProviderDependencies: [Target.Dependency] = {
 let facadeDependencies: [Target.Dependency] = {
     var d: [Target.Dependency] = [
         "TLSCryptoProvider",
+        .product(name: "TLSTypes", package: "swift-tls-types"),
         .product(name: "TLSWire", package: "swift-ssl"),
         .product(name: "DTLSWire", package: "swift-ssl"),
         .product(name: "DTLSHandshake", package: "swift-ssl"),
@@ -76,6 +77,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/1amageek/swift-ssl.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/swift-tls-types.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-p2p-core.git", branch: "main"),
     ],
     targets: [
