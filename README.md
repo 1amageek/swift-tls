@@ -81,7 +81,7 @@ Add swift-tls-sessions to your `Package.swift`:
 dependencies: [
     .package(
         name: "swift-tls-sessions",
-        url: "https://github.com/1amageek/swift-tls.git",
+        url: "https://github.com/1amageek/swift-tls-sessions.git",
         from: "2.0.0"
     ),
 ]
