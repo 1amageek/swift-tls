@@ -30,19 +30,19 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer \
 python3 Benchmarks/DTLSCopyBudget/run_benchmark.py --formal
 ```
 
-## 2026-08-06 result
+## 2026-08-07 result
 
 Swift `swift-6.4.x-DEVELOPMENT-SNAPSHOT-2026-07-23-a`, compiler commit
 `ef761e567dc94ee`, arm64 macOS 26 deployment target:
 
 | Direction | Payload | Allocations/op | Allocated bytes/op | Dynamic bulk-copy bytes/op | Median ns/op | Gate |
 |---|---:|---:|---:|---:|---:|---:|
-| Send | 1 | 4 | 180 | 1,064 | 1,146.16 | Pass |
-| Send | 1,200 | 4 | 1,379 | 1,064 | 1,361.98 | Pass |
-| Send | 16,384 | 4 | 16,563 | 800 | 3,780.93 | Pass |
-| Receive | 1 | 3 | 110 | 1,064 | 1,124.35 | Pass |
-| Receive | 1,200 | 3 | 1,309 | 1,064 | 1,377.93 | Pass |
-| Receive | 16,384 | 3 | 16,493 | 800 | 3,627.93 | Pass |
+| Send | 1 | 4 | 180 | 1,064 | 1,145.83 | Pass |
+| Send | 1,200 | 4 | 1,379 | 1,064 | 1,361.65 | Pass |
+| Send | 16,384 | 4 | 16,563 | 800 | 3,622.73 | Pass |
+| Receive | 1 | 3 | 110 | 1,064 | 1,124.02 | Pass |
+| Receive | 1,200 | 3 | 1,309 | 1,064 | 1,371.09 | Pass |
+| Receive | 16,384 | 3 | 16,493 | 800 | 3,624.02 | Pass |
 
 The send allocation budget is exactly `payload + 179` bytes/op; receive is
 `payload + 109`. Both output-owner slopes are `1.0 byte / payload byte`, so
@@ -53,6 +53,5 @@ a matching free.
 
 Artifact:
 [`Results/20260806T142358Z-native-dtls-copy-budget.json`](Results/20260806T142358Z-native-dtls-copy-budget.json).
-The artifact records that it was captured from the current uncommitted working
-tree; the release gate must be rerun after the final commit so the recorded
-source identity is immutable.
+The artifact records clean source commit
+`d9338093fc84ae7bbe458c1efcb0acdf73d8b09d` and a passing gate.

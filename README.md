@@ -84,12 +84,12 @@ benchmark is kept outside normal test targets.
 
 | Direction | Payload | Allocations/op | Allocated bytes/op | Median |
 |---|---:|---:|---:|---:|
-| Send | 1 byte | 4 | 180 | 1,146.16 ns/op |
-| Send | 1,200 bytes | 4 | 1,379 | 1,361.98 ns/op |
-| Send | 16,384 bytes | 4 | 16,563 | 3,780.93 ns/op |
-| Receive | 1 byte | 3 | 110 | 1,124.35 ns/op |
-| Receive | 1,200 bytes | 3 | 1,309 | 1,377.93 ns/op |
-| Receive | 16,384 bytes | 3 | 16,493 | 3,627.93 ns/op |
+| Send | 1 byte | 4 | 180 | 1,145.83 ns/op |
+| Send | 1,200 bytes | 4 | 1,379 | 1,361.65 ns/op |
+| Send | 16,384 bytes | 4 | 16,563 | 3,622.73 ns/op |
+| Receive | 1 byte | 3 | 110 | 1,124.02 ns/op |
+| Receive | 1,200 bytes | 3 | 1,309 | 1,371.09 ns/op |
+| Receive | 16,384 bytes | 3 | 16,493 | 3,624.02 ns/op |
 
 Both measured allocation-byte slopes are exactly `1.0`, proving one
 payload-sized output owner in each direction and no encrypted-datagram or
@@ -108,7 +108,6 @@ Add swift-tls to your `Package.swift`:
 ```swift
 dependencies: [
     .package(
-        name: "swift-tls",
         url: "https://github.com/1amageek/swift-tls.git",
         from: "1.3.3"
     ),
