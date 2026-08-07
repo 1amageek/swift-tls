@@ -4,7 +4,7 @@ import SSLCrypto
 
 @main
 struct FacadeValidationCommand {
-    static func main() async {
+    static func main() {
         do {
             // Keep the primitive provider in the executable link graph. The
             // facade's provider is intentionally supplied by swift-ssl.
@@ -15,14 +15,14 @@ struct FacadeValidationCommand {
                     verifyPeer: false
                 )
             )
-            let clientHello = try await client.startHandshake()
+            let clientHello = try client.startHandshake()
             guard !clientHello.isEmpty else {
                 throw ValidationFailure.emptyClientHello
             }
 
             var rejectedMalformedRecord = false
             do {
-                _ = try await client.receive([0xFF].span)
+                _ = try client.receive([0xFF].span)
             } catch {
                 rejectedMalformedRecord = true
             }

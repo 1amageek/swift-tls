@@ -8,9 +8,11 @@ DerivedData/
 
 # Swift Package Manager
 .build/
+.build-*/
 .swiftpm/xcode/
 .swiftpm/configuration/
 Package.resolved
+.test-artifacts/
 
 # Environment / Secrets
 .netrc

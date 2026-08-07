@@ -2,7 +2,7 @@
 Scope/role: the TLS/DTLS 1.3/1.2 session facade (`Sources/TLS`) over the canonical
 `swift-ssl` mechanisms; depended on by libp2p, WebRTC, and peer-connectivity for
 secure transport.
-Last reviewed: 2026-08-04
+Last reviewed: 2026-08-06
 
 Invariants and design intent that the code does not state structurally. Read this
 before changing the facade (`Sources/TLS`) or the engines. The currency is
@@ -55,9 +55,10 @@ The workspace source of truth is
   "the caller that locks": each facade type is a `final class & Sendable` holding
   the engine behind `FacadeLock` and serialising every mutation. Do not add a lock
   inside an engine, and do not make an engine a reference type.
-- TLS facade methods are `async` (source compatibility only — the engine never
-  suspends, it is lock-bound not I/O-bound, so they complete promptly). DTLS facade
-  methods are synchronous. Keep this asymmetry; it is intentional.
+- TLS and DTLS facade methods are synchronous because the engines perform no I/O
+  and never suspend. A transport adapter owns socket I/O, backpressure, record
+  sequencing, and any asynchronous lifecycle around these calls. Do not put
+  `await` or I/O inside the facade mutex.
 - The stream facade accepts handshake records, application data, post-handshake
   transitions, and authenticated peer alerts through the classified
   `swift-ssl` record contract. A peer `close_notify` is terminal at the facade
@@ -117,6 +118,55 @@ The workspace source of truth is
 - **Every target uses the unified `TLSCryptoProvider` over swift-ssl.** Native,
   WASM, and Embedded resolve the same Pure Swift provider. Target differences are
   limited to platform allocation and synchronization implementations.
+
+### Shared-state review matrix
+
+The declarations below are compiled from the same source on every target. A
+platform port may change the implementation behind `Synchronization.Mutex`, but
+it must not change any storage owner, isolation boundary, mutation entry point,
+or `Sendable` contract in this table.
+
+| Logical state | Native storage / isolation | WASI storage / isolation | Embedded storage / isolation | Read entry points | Mutation entry points | Close / owner release |
+|---|---|---|---|---|---|---|
+| TLS client session | `Mutex<TLSClientStorage>` | `Mutex<TLSClientStorage>` | `Mutex<TLSClientStorage>` | Public snapshots and engine queries under `withLock` | Handshake, record, capability-resume, key-update, and close transitions under `withLock`; external policy runs after the snapshot is released | `close()` marks the protected state terminal; ARC releases the mutex and engine owner |
+| TLS server session | `Mutex<TLSServerStorage>` | `Mutex<TLSServerStorage>` | `Mutex<TLSServerStorage>` | Public snapshots and engine queries under `withLock` | Handshake, record, ticket, capability-resume, key-update, and close transitions under `withLock`; external policy runs after the snapshot is released | `close()` marks the protected state terminal; ARC releases the mutex and engine owner |
+| DTLS client session | `FacadeLock<DTLSClientEngineStorage>` (`Mutex`) | Same | Same | Session and retransmission snapshots under `withLock` | Datagram, timeout, send, and close transitions under `withLock` | `close()` advances the protected engine to terminal state; ARC releases the owner |
+| DTLS server session | `FacadeLock<DTLSServerEngineStorage>` (`Mutex`) | Same | Same | Session and retransmission snapshots under `withLock` | Address-bound datagram, timeout, send, and close transitions under `withLock` | `close()` advances the protected engine to terminal state; ARC releases the owner |
+| Resumption state | `Mutex<TLSResumptionState.Storage>` | Same | Same | No borrowed public snapshot; state is consumed under `withLock` | The one-shot take operation clears the protected owner under `withLock` | Taking consumes the secret owner; otherwise ARC releases and erases it |
+| Peer capture | `Mutex<CanonicalPeerCapture.State>` | Same | Same | Identity snapshot under `withLock` | Authenticated certificate/identity publication under `withLock` | ARC releases the capture after its facade and validators are released |
+
+`SystemEntropySource` has no stored state. Its Embedded conditional selects the
+standard-library entropy entry point and writes directly into the same
+caller-owned `MutableSpan`; it is a platform capability branch, not a weaker
+synchronization or ownership contract.
+
+## DTLS ownership and copy contract
+
+```mermaid
+flowchart LR
+    Plain["caller plaintext Span"] --> Seal["AEAD seal into record tail"]
+    Seal --> Wire["one wire-record owner"]
+    Datagram["caller datagram owner"] --> Borrow["Span borrow"]
+    Borrow --> Verify["parse + AEAD authentication"]
+    Verify --> Output["one plaintext owner"]
+```
+
+- `DTLSClient.send` and `DTLSServer.send` allocate the final 13-byte-header plus
+  encrypted-fragment record once. `DTLSRecordProtectionContext.seal(...into:)`
+  writes into its tail; no intermediate encrypted-fragment owner is permitted.
+- `DTLSClient.receive` and `DTLSServer.receive` borrow caller-owned datagrams
+  through the facade lock, engine record parser, and AEAD authentication. No
+  `[UInt8]` owner for the whole encrypted datagram may be created on this path.
+- `DTLS12AESGCMRecordProtector.openRaw(...into:)` writes authenticated plaintext
+  directly into the engine's final output owner. Do not reintroduce an
+  `OwnedBytes -> [UInt8]` adapter copy.
+- A single application-data record transfers that final owner into
+  `DTLSEngineOutput.applicationData` through Array COW ownership. Multiple
+  coalesced records may append into the aggregate owner because the public output
+  intentionally represents one concatenated application-data value.
+- The manual copy-budget gate in `Benchmarks/DTLSCopyBudget` must retain send and
+  receive allocation-byte slopes of `1.0`, balanced allocation/free counts, and
+  no payload-proportional libc bulk copy.
 
 ## Build
 

@@ -37,4 +37,16 @@ extension TLSError {
             return .internalError(reason: reason)
         }
     }
+
+    /// Maps the existential error emitted by a throwing lock closure without
+    /// relying on `Result.mapError`'s generic reabstraction path. The closure's
+    /// contract only permits `DTLSEngineError`; the explicit fallback preserves
+    /// that invariant as a typed internal failure if a future implementation
+    /// violates it instead of turning an unexpected error into success.
+    static func fromDTLSEngine(_ error: any Error) -> TLSError {
+        guard let engineError = error as? DTLSEngineError else {
+            return .internalError(reason: "Unexpected DTLS engine error")
+        }
+        return fromDTLSEngine(engineError)
+    }
 }

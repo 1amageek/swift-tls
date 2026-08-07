@@ -31,7 +31,7 @@ public final class TLSServer: Sendable {
     }
 
     /// A server waits for the peer's ClientHello and therefore emits no bytes initially.
-    public func startHandshake() async throws(TLSError) -> [UInt8] {
+    public func startHandshake() throws(TLSError) -> [UInt8] {
         guard !engine.withLock({ $0.closed }) else {
             throw .connectionClosed
         }
@@ -42,9 +42,9 @@ public final class TLSServer: Sendable {
     /// framing and must split coalesced records before calling this method.
     /// External trust, credential, and signing callbacks run outside the
     /// session mutex and may suspend independently of the TLS state machine.
-    public func receive(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
-        if engine.withLock({ $0.closed }) {
-            return TLSOutput()
+    public func receive(_ bytes: Span<UInt8>) throws(TLSError) -> TLSOutput {
+        guard !engine.withLock({ $0.closed }) else {
+            throw .connectionClosed
         }
         let established = engine.withLock { $0.handshake.isEstablished }
         if !established {
@@ -54,7 +54,7 @@ public final class TLSServer: Sendable {
     }
 
     /// Processes one complete TLS record and preserves a capability suspension.
-    public func receiveStep(_ bytes: Span<UInt8>) async throws(TLSError) -> TLSOutput {
+    public func receiveStep(_ bytes: Span<UInt8>) throws(TLSError) -> TLSOutput {
         return try runTransition { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }
             return try state.handshake.receiveRecordStep(bytes)
@@ -62,7 +62,7 @@ public final class TLSServer: Sendable {
     }
 
     /// Resumes the exact suspended TLS transition identified by `response.token`.
-    public func resume(_ response: TLSCapabilityResponse) async throws(TLSError) -> TLSOutput {
+    public func resume(_ response: TLSCapabilityResponse) throws(TLSError) -> TLSOutput {
         guard !engine.withLock({ $0.closed }) else {
             throw .connectionClosed
         }
@@ -76,7 +76,7 @@ public final class TLSServer: Sendable {
         }
     }
 
-    public func send(_ application: Span<UInt8>) async throws(TLSError) -> [UInt8] {
+    public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
         try requireEstablished()
         let output = try run { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }
@@ -143,7 +143,7 @@ public final class TLSServer: Sendable {
     /// update its sending key as well; its response is handled by `receive(_:)`.
     public func requestKeyUpdate(
         requestPeerUpdate: Bool = false
-    ) async throws(TLSError) -> [UInt8] {
+    ) throws(TLSError) -> [UInt8] {
         try requireEstablished()
         let output = try run { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }
@@ -154,7 +154,7 @@ public final class TLSServer: Sendable {
         return try CanonicalTLSProjection.bytesToSend(output)
     }
 
-    public func close() async throws(TLSError) -> [UInt8] {
+    public func close() throws(TLSError) -> [UInt8] {
         try requireEstablished()
         let output = try run { state throws(TLS13HandshakeEngineError) in
             guard !state.closed else { throw .invalidState }

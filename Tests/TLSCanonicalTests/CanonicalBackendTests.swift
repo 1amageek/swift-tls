@@ -2,6 +2,7 @@ import Testing
 import TLS
 import TLSCryptoProvider
 import DTLSRecordCore
+import DTLSWireCore
 import SSLCrypto
 import Synchronization
 
@@ -93,17 +94,128 @@ func pureSwiftProviderRoundTripsDTLSRecordProtection() throws {
     let aad = [UInt8](repeating: 0xA5, count: 13)
 
     let ciphertext = try context.seal(
-        plaintext: plaintext,
+        plaintext: plaintext.span,
         explicitNonce: explicitNonce,
         aad: aad
     )
-    let opened = try context.open(ciphertext: ciphertext, aad: aad)
+    var callerOwnedCiphertext = [UInt8](
+        repeating: 0,
+        count: try context.sealedByteCount(forPlaintextByteCount: plaintext.count)
+    )
+    try callerOwnedCiphertext.withUnsafeMutableBufferPointer { buffer in
+        var output = MutableSpan(_unsafeElements: buffer)
+        try context.seal(
+            plaintext: plaintext.span,
+            explicitNonce: explicitNonce,
+            aad: aad,
+            into: &output
+        )
+    }
+    #expect(callerOwnedCiphertext == ciphertext)
+    let opened = try context.open(ciphertext: ciphertext.span, aad: aad)
     #expect(opened == plaintext)
 
     var tampered = ciphertext
     tampered[tampered.index(before: tampered.endIndex)] ^= 1
     #expect(throws: DTLSRecordProtectionError.self) {
-        _ = try context.open(ciphertext: tampered, aad: aad)
+        _ = try context.open(ciphertext: tampered.span, aad: aad)
+    }
+}
+
+@Test
+func dtlsFacadeTransfersApplicationDataInBothDirections() throws {
+    let identity = validP256Identity()
+    let configuration = DTLSConfiguration(identity: identity)
+    let client = try DTLSClient(configuration: configuration)
+    let server = try DTLSServer(configuration: configuration)
+    let remoteAddress = ContiguousArray<UInt8>([127, 0, 0, 1, 0x1F, 0x90])
+    try completeDTLSHandshake(
+        client: client,
+        server: server,
+        remoteAddress: remoteAddress
+    )
+
+    let clientPayload = ContiguousArray("client DTLS payload".utf8)
+    let clientDatagram = try client.send(clientPayload.span)
+    #expect(clientDatagram.count == clientPayload.count + 37)
+    let serverOutput = try server.receive(
+        clientDatagram.span,
+        from: remoteAddress.span
+    )
+    #expect(serverOutput.applicationData == Array(clientPayload))
+    #expect(serverOutput.datagramsToSend.isEmpty)
+    #expect(serverOutput.anomalies.isEmpty)
+
+    let serverPayload = ContiguousArray("server DTLS payload".utf8)
+    let serverDatagram = try server.send(serverPayload.span)
+    #expect(serverDatagram.count == serverPayload.count + 37)
+    let clientOutput = try client.receive(serverDatagram.span)
+    #expect(clientOutput.applicationData == Array(serverPayload))
+    #expect(clientOutput.datagramsToSend.isEmpty)
+    #expect(clientOutput.anomalies.isEmpty)
+}
+
+@Test
+func dtlsCookieRetryKeepsHandshakeMessageSequenceMonotonic() throws {
+    let identity = validP256Identity()
+    let client = try DTLSClient(configuration: DTLSConfiguration(identity: identity))
+    let server = try DTLSServer(configuration: DTLSConfiguration(identity: identity))
+    let remoteAddress = ContiguousArray<UInt8>([127, 0, 0, 1, 0x1F, 0x90])
+
+    #expect(try server.startHandshake().isEmpty)
+    let initialClientHello = try #require(client.startHandshake().first)
+    let initialMessage = try decodeDTLSHandshakeDatagram(initialClientHello)
+    #expect(initialMessage.header.messageType == .clientHello)
+    #expect(initialMessage.header.messageSeq == 0)
+
+    let helloVerifyOutput = try server.receive(
+        ContiguousArray(initialClientHello).span,
+        from: remoteAddress.span
+    )
+    let helloVerifyDatagram = try #require(helloVerifyOutput.datagramsToSend.first)
+    let helloVerifyMessage = try decodeDTLSHandshakeDatagram(helloVerifyDatagram)
+    #expect(helloVerifyMessage.header.messageType == .helloVerifyRequest)
+    #expect(helloVerifyMessage.header.messageSeq == 0)
+    let helloVerifyCookie = try decodeHelloVerifyRequestCookie(helloVerifyMessage.body)
+
+    let retryOutput = try client.receive(ContiguousArray(helloVerifyDatagram).span)
+    let retryDatagram = try #require(retryOutput.datagramsToSend.first)
+    let retryMessage = try decodeDTLSHandshakeDatagram(retryDatagram)
+    #expect(retryMessage.header.messageType == .clientHello)
+    #expect(retryMessage.header.messageSeq == 1)
+    #expect(try DTLSClientHello.decode(from: retryMessage.body).cookie == helloVerifyCookie)
+
+    let serverFlight = try server.receive(
+        ContiguousArray(retryDatagram).span,
+        from: remoteAddress.span
+    )
+    let firstServerFlightDatagram = try #require(serverFlight.datagramsToSend.first)
+    let firstServerFlightMessage = try decodeDTLSHandshakeDatagram(firstServerFlightDatagram)
+    #expect(firstServerFlightMessage.header.messageType == .serverHello)
+    #expect(firstServerFlightMessage.header.messageSeq == 1)
+
+    var clientToServer: [[UInt8]] = []
+    var serverToClient = serverFlight.datagramsToSend
+    var iterations = 0
+    while !client.isEstablished || !server.isEstablished {
+        iterations += 1
+        guard iterations < 64 else {
+            throw TLSError.protocolFailure(reason: "DTLS handshake exceeded the test flight limit")
+        }
+        if !serverToClient.isEmpty {
+            let datagram = serverToClient.removeFirst()
+            let output = try client.receive(ContiguousArray(datagram).span)
+            clientToServer.append(contentsOf: output.datagramsToSend)
+        } else if !clientToServer.isEmpty {
+            let datagram = clientToServer.removeFirst()
+            let output = try server.receive(
+                ContiguousArray(datagram).span,
+                from: remoteAddress.span
+            )
+            serverToClient.append(contentsOf: output.datagramsToSend)
+        } else {
+            throw TLSError.protocolFailure(reason: "DTLS handshake stalled before establishment")
+        }
     }
 }
 
@@ -121,7 +233,7 @@ func rawPublicKeyTrustRootsAreValidatedAtTheFacadeBoundary() throws {
 }
 
 @Test
-func streamRejectsApplicationDataBeforeHandshake() async throws {
+func streamRejectsApplicationDataBeforeHandshake() throws {
     let client = try TLSClient(configuration: TLSConfiguration(
         verifyPeer: false,
         certificateTypes: TLSCertificateTypes(
@@ -130,7 +242,7 @@ func streamRejectsApplicationDataBeforeHandshake() async throws {
         )
     ))
     do {
-        _ = try await client.send(ContiguousArray<UInt8>().span)
+        _ = try client.send(ContiguousArray<UInt8>().span)
         Issue.record("send unexpectedly succeeded before handshake")
     } catch let error {
         #expect(error == .handshakeNotComplete)
@@ -230,7 +342,7 @@ func x509PeerAuthenticationCannotBeEnabledWithoutTrustPolicy() {
 }
 
 @Test
-func streamFacadeCompletesRawKeyHandshakeAndTransfersApplicationData() async throws {
+func streamFacadeCompletesRawKeyHandshakeAndTransfersApplicationData() throws {
     let identity = validRawIdentity()
     let server = try TLSServer(configuration: TLSConfiguration(
         verifyPeer: false,
@@ -244,18 +356,18 @@ func streamFacadeCompletesRawKeyHandshakeAndTransfersApplicationData() async thr
         certificateTypes: .rawPublicKey
     ))
 
-    try await completeRawHandshake(client: client, server: server)
+    try completeRawHandshake(client: client, server: server)
     #expect(client.isEstablished)
     #expect(server.isEstablished)
 
     let plaintext = ContiguousArray("swift-tls application data".utf8)
-    let encrypted = try await client.send(plaintext.span)
-    let received = try await server.receive(ContiguousArray(encrypted).span)
+    let encrypted = try client.send(plaintext.span)
+    let received = try server.receive(ContiguousArray(encrypted).span)
     #expect(received.applicationData == Array(plaintext))
 }
 
 @Test
-func streamPeerCloseNotifyIsTerminalAndPostCloseDataIsIgnored() async throws {
+func streamPeerCloseNotifyIsTerminalAndPostCloseDataIsRejected() throws {
     let identity = validRawIdentity()
     let server = try TLSServer(configuration: TLSConfiguration(
         verifyPeer: false,
@@ -269,26 +381,29 @@ func streamPeerCloseNotifyIsTerminalAndPostCloseDataIsIgnored() async throws {
         certificateTypes: .rawPublicKey
     ))
 
-    try await completeRawHandshake(client: client, server: server)
-    let encryptedBeforeClose = try await client.send(
+    try completeRawHandshake(client: client, server: server)
+    let encryptedBeforeClose = try client.send(
         ContiguousArray<UInt8>([0xA5]).span
     )
-    let closeBytes = try await server.close()
+    let closeBytes = try server.close()
     let closeRecords = try splitTLSRecords(ContiguousArray(closeBytes))
     #expect(closeRecords.count == 1)
 
     var closeOutput = TLSOutput()
     for record in closeRecords {
-        closeOutput = try await client.receive(record.span)
+        closeOutput = try client.receive(record.span)
     }
     #expect(closeOutput.peerClosed)
     #expect(!client.isEstablished)
 
-    let ignored = try await client.receive(ContiguousArray(encryptedBeforeClose).span)
-    #expect(ignored.applicationData.isEmpty)
-    #expect(!ignored.peerClosed)
     do {
-        _ = try await client.send(ContiguousArray<UInt8>().span)
+        _ = try client.receive(ContiguousArray(encryptedBeforeClose).span)
+        Issue.record("receive unexpectedly succeeded after peer close_notify")
+    } catch let error {
+        #expect(error == .connectionClosed)
+    }
+    do {
+        _ = try client.send(ContiguousArray<UInt8>().span)
         Issue.record("send unexpectedly succeeded after peer close_notify")
     } catch let error {
         #expect(error == .connectionClosed)
@@ -296,7 +411,7 @@ func streamPeerCloseNotifyIsTerminalAndPostCloseDataIsIgnored() async throws {
 }
 
 @Test
-func streamKeyUpdateRotatesBothApplicationTrafficDirections() async throws {
+func streamKeyUpdateRotatesBothApplicationTrafficDirections() throws {
     let identity = validRawIdentity()
     let server = try TLSServer(configuration: TLSConfiguration(
         verifyPeer: false,
@@ -309,37 +424,37 @@ func streamKeyUpdateRotatesBothApplicationTrafficDirections() async throws {
         identity: identity,
         certificateTypes: .rawPublicKey
     ))
-    try await completeRawHandshake(client: client, server: server)
+    try completeRawHandshake(client: client, server: server)
 
-    let update = try await server.requestKeyUpdate(requestPeerUpdate: true)
+    let update = try server.requestKeyUpdate(requestPeerUpdate: true)
     var responseRecords: [ContiguousArray<UInt8>] = []
     for record in try splitTLSRecords(ContiguousArray(update)) {
-        let output = try await client.receive(record.span)
+        let output = try client.receive(record.span)
         responseRecords.append(contentsOf: try splitTLSRecords(
             ContiguousArray(output.bytesToSend)
         ))
     }
     #expect(!responseRecords.isEmpty)
     for record in responseRecords {
-        let output = try await server.receive(record.span)
+        let output = try server.receive(record.span)
         #expect(output.applicationData.isEmpty)
     }
 
     let clientPayload = ContiguousArray("client after key update".utf8)
-    let serverReceived = try await server.receive(
-        ContiguousArray(try await client.send(clientPayload.span)).span
+    let serverReceived = try server.receive(
+        ContiguousArray(try client.send(clientPayload.span)).span
     )
     #expect(serverReceived.applicationData == Array(clientPayload))
 
     let serverPayload = ContiguousArray("server after key update".utf8)
-    let clientReceived = try await client.receive(
-        ContiguousArray(try await server.send(serverPayload.span)).span
+    let clientReceived = try client.receive(
+        ContiguousArray(try server.send(serverPayload.span)).span
     )
     #expect(clientReceived.applicationData == Array(serverPayload))
 }
 
 @Test
-func streamNewSessionTicketResumesWithClientAndServerState() async throws {
+func streamNewSessionTicketResumesWithClientAndServerState() throws {
     let identity = validRawIdentity()
     let serverConfiguration = TLSConfiguration(
         verifyPeer: false,
@@ -355,7 +470,7 @@ func streamNewSessionTicketResumesWithClientAndServerState() async throws {
     )
     let firstServer = try TLSServer(configuration: serverConfiguration)
     let firstClient = try TLSClient(configuration: clientConfiguration)
-    try await completeRawHandshake(client: firstClient, server: firstServer)
+    try completeRawHandshake(client: firstClient, server: firstServer)
 
     let issued = try firstServer.sendNewSessionTicket(
         lifetime: 60,
@@ -363,7 +478,7 @@ func streamNewSessionTicketResumesWithClientAndServerState() async throws {
         ticketNonce: ContiguousArray([0x01, 0x02]).span,
         ticket: ContiguousArray([0xA0, 0xA1, 0xA2]).span
     )
-    let ticketOutput = try await firstClient.receive(
+    let ticketOutput = try firstClient.receive(
         ContiguousArray(issued.bytesToSend).span
     )
     #expect(ticketOutput.sessionTicketReceived)
@@ -385,13 +500,13 @@ func streamNewSessionTicketResumesWithClientAndServerState() async throws {
         configuration: clientConfiguration,
         resumptionState: clientState
     )
-    try await completeRawHandshake(client: resumedClient, server: resumedServer)
+    try completeRawHandshake(client: resumedClient, server: resumedServer)
     #expect(resumedClient.isEstablished)
     #expect(resumedServer.isEstablished)
 }
 
 @Test
-func streamExternalX509PolicyCallbackAuthenticatesPeer() async throws {
+func streamExternalX509PolicyCallbackAuthenticatesPeer() throws {
     let callbackInvocations = Mutex(0)
     let client = try TLSClient(configuration: TLSConfiguration(
         verifyPeer: false,
@@ -406,7 +521,7 @@ func streamExternalX509PolicyCallbackAuthenticatesPeer() async throws {
         identity: validP256Identity()
     ))
 
-    try await completeAutomaticHandshake(client: client, server: server)
+    try completeAutomaticHandshake(client: client, server: server)
     #expect(callbackInvocations.withLock { $0 == 1 })
     #expect(client.peerIdentity?.identifier == [0xA5])
 }
@@ -414,8 +529,8 @@ func streamExternalX509PolicyCallbackAuthenticatesPeer() async throws {
 private func completeRawHandshake(
     client: TLSClient,
     server: TLSServer
-) async throws(TLSError) {
-    var clientToServer = try splitTLSRecords(ContiguousArray(try await client.startHandshake()))
+) throws(TLSError) {
+    var clientToServer = try splitTLSRecords(ContiguousArray(try client.startHandshake()))
     var serverToClient: [ContiguousArray<UInt8>] = []
     var iterations = 0
     while (!client.isEstablished || !server.isEstablished) &&
@@ -428,7 +543,7 @@ private func completeRawHandshake(
             let record = clientToServer.removeFirst()
             let output: TLSOutput
             do {
-                output = try await server.receiveStep(record.span)
+                output = try server.receiveStep(record.span)
             } catch let error {
                 throw .protocolFailure(reason: "server receive failed: \(error)")
             }
@@ -440,7 +555,7 @@ private func completeRawHandshake(
             let record = serverToClient.removeFirst()
             let output: TLSOutput
             do {
-                output = try await client.receiveStep(record.span)
+                output = try client.receiveStep(record.span)
             } catch let error {
                 throw .protocolFailure(reason: "client receive failed: \(error)")
             }
@@ -458,8 +573,8 @@ private func completeRawHandshake(
 private func completeAutomaticHandshake(
     client: TLSClient,
     server: TLSServer
-) async throws(TLSError) {
-    var clientToServer = try splitTLSRecords(ContiguousArray(try await client.startHandshake()))
+) throws(TLSError) {
+    var clientToServer = try splitTLSRecords(ContiguousArray(try client.startHandshake()))
     var serverToClient: [ContiguousArray<UInt8>] = []
     var iterations = 0
     while (!client.isEstablished || !server.isEstablished) &&
@@ -470,16 +585,44 @@ private func completeAutomaticHandshake(
         }
         if !clientToServer.isEmpty {
             let record = clientToServer.removeFirst()
-            let output = try await server.receive(record.span)
+            let output = try server.receive(record.span)
             serverToClient.append(contentsOf: try splitTLSRecords(ContiguousArray(output.bytesToSend)))
         } else if !serverToClient.isEmpty {
             let record = serverToClient.removeFirst()
-            let output = try await client.receive(record.span)
+            let output = try client.receive(record.span)
             clientToServer.append(contentsOf: try splitTLSRecords(ContiguousArray(output.bytesToSend)))
         }
     }
     guard client.isEstablished, server.isEstablished else {
         throw .protocolFailure(reason: "TLS handshake stalled before establishment")
+    }
+}
+
+private func completeDTLSHandshake(
+    client: DTLSClient,
+    server: DTLSServer,
+    remoteAddress: ContiguousArray<UInt8>
+) throws(TLSError) {
+    _ = try server.startHandshake()
+    var clientToServer = try client.startHandshake()
+    var serverToClient: [[UInt8]] = []
+    var iterations = 0
+    while !client.isEstablished || !server.isEstablished {
+        iterations += 1
+        guard iterations < 64 else {
+            throw .protocolFailure(reason: "DTLS handshake exceeded the test flight limit")
+        }
+        if !clientToServer.isEmpty {
+            let datagram = clientToServer.removeFirst()
+            let output = try server.receive(datagram.span, from: remoteAddress.span)
+            serverToClient.append(contentsOf: output.datagramsToSend)
+        } else if !serverToClient.isEmpty {
+            let datagram = serverToClient.removeFirst()
+            let output = try client.receive(datagram.span)
+            clientToServer.append(contentsOf: output.datagramsToSend)
+        } else {
+            throw .protocolFailure(reason: "DTLS handshake stalled before establishment")
+        }
     }
 }
 
@@ -551,6 +694,67 @@ private func p256Certificate() -> [UInt8] {
         index = next
     }
     return result
+}
+
+private func decodeDTLSHandshakeDatagram(
+    _ datagram: [UInt8]
+) throws -> (header: DTLSHandshakeHeader, body: [UInt8]) {
+    let recordHeaderSize = 13
+    let handshakeHeaderSize = DTLSHandshakeHeader.headerSize
+    guard datagram.count >= recordHeaderSize + handshakeHeaderSize,
+          datagram[0] == 22 else {
+        throw TLSError.protocolFailure(reason: "Expected a DTLS handshake record")
+    }
+
+    let recordLength = (Int(datagram[11]) << 8) | Int(datagram[12])
+    guard recordLength >= handshakeHeaderSize,
+          recordHeaderSize + recordLength <= datagram.count,
+          let messageType = DTLSHandshakeType(rawValue: datagram[recordHeaderSize]) else {
+        throw TLSError.protocolFailure(reason: "Malformed DTLS record framing")
+    }
+
+    let handshakeLength =
+        (Int(datagram[recordHeaderSize + 1]) << 16) |
+        (Int(datagram[recordHeaderSize + 2]) << 8) |
+        Int(datagram[recordHeaderSize + 3])
+    let messageSequence =
+        (UInt16(datagram[recordHeaderSize + 4]) << 8) |
+        UInt16(datagram[recordHeaderSize + 5])
+    let fragmentOffset =
+        (Int(datagram[recordHeaderSize + 6]) << 16) |
+        (Int(datagram[recordHeaderSize + 7]) << 8) |
+        Int(datagram[recordHeaderSize + 8])
+    let fragmentLength =
+        (Int(datagram[recordHeaderSize + 9]) << 16) |
+        (Int(datagram[recordHeaderSize + 10]) << 8) |
+        Int(datagram[recordHeaderSize + 11])
+    guard fragmentOffset == 0,
+          fragmentLength == handshakeLength,
+          recordLength >= handshakeHeaderSize + handshakeLength else {
+        throw TLSError.protocolFailure(reason: "Expected one complete DTLS handshake message")
+    }
+
+    let bodyStart = recordHeaderSize + handshakeHeaderSize
+    let body = Array(datagram[bodyStart..<(bodyStart + handshakeLength)])
+    return (
+        DTLSHandshakeHeader(
+            messageType: messageType,
+            length: UInt32(handshakeLength),
+            messageSeq: messageSequence
+        ),
+        body
+    )
+}
+
+private func decodeHelloVerifyRequestCookie(_ body: [UInt8]) throws -> [UInt8] {
+    guard body.count >= 3 else {
+        throw TLSError.protocolFailure(reason: "Truncated HelloVerifyRequest")
+    }
+    let cookieLength = Int(body[2])
+    guard body.count == 3 + cookieLength else {
+        throw TLSError.protocolFailure(reason: "Malformed HelloVerifyRequest cookie")
+    }
+    return Array(body[3...])
 }
 
 private func deterministicEd25519SubjectPublicKeyInfo() -> [UInt8] {

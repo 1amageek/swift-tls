@@ -37,26 +37,20 @@ public final class DTLSServer: Sendable {
     /// Feeds a received UDP datagram. `remoteAddress` binds the
     /// HelloVerifyRequest cookie to the client's transport address.
     public func receive(_ datagram: Span<UInt8>, from remoteAddress: Span<UInt8>) throws(TLSError) -> DTLSOutput {
-        let input = datagram.facadeArray()
-        let address = remoteAddress.facadeArray()
-        let result: Result<DTLSOutput, TLSError> = engine.withLock { storage in
-            Result { () throws(DTLSEngineError) -> DTLSOutput in
-                let output = try storage.value.receiveOwned(input, from: address)
+        do {
+            return try engine.withLock { storage in
+                let output = try storage.value.receive(datagram, from: remoteAddress)
                 return DTLSOutput(from: consume output)
             }
-            .mapError(TLSError.fromDTLSEngine)
-        }
-        switch result {
-        case .success(let output): return output
-        case .failure(let error): throw error
+        } catch {
+            throw TLSError.fromDTLSEngine(error)
         }
     }
 
     /// Encrypts application data and returns the DTLS datagram to send.
     public func send(_ application: Span<UInt8>) throws(TLSError) -> [UInt8] {
-        let input = application.facadeArray()
         return try run { (e) throws(DTLSEngineError) in
-            try e.sendOwned(input)
+            try e.send(application)
         }
     }
 
@@ -134,13 +128,12 @@ public final class DTLSServer: Sendable {
     private func run<R: Sendable>(
         _ body: (inout DTLSServerEngine<TLSCryptoProvider>) throws(DTLSEngineError) -> R
     ) throws(TLSError) -> R {
-        let result: Result<R, TLSError> = engine.withLock { engine in
-            Result { () throws(DTLSEngineError) -> R in try body(&engine.value) }
-                .mapError(TLSError.fromDTLSEngine)
-        }
-        switch result {
-        case .success(let value): return value
-        case .failure(let error): throw error
+        do {
+            return try engine.withLock { engine in
+                try body(&engine.value)
+            }
+        } catch {
+            throw TLSError.fromDTLSEngine(error)
         }
     }
 }

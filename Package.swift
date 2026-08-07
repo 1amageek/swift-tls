@@ -61,26 +61,14 @@ let facadeDependencies: [Target.Dependency] = {
     return d
 }()
 
-let package = Package(
-    // This package owns the public TLS-family session contracts above swift-ssl.
-    name: "swift-tls",
-    platforms: [
-        .macOS(.v26), .iOS(.v26), .tvOS(.v26),
-        .watchOS(.v26), .visionOS(.v26),
-    ],
-    products: [
-        // ---- Tier-1 facade (the default `import TLS`) ----
-        .library(name: "TLS", targets: ["TLS"]),
-        // ---- QUIC TLS session boundary ----
-        .library(name: "QUICTLS", targets: ["QUICTLS"]),
-        // ---- Tier-3 pure wire codecs (separate opt-in import) ----
-    ],
-    dependencies: [
-        .package(url: "https://github.com/1amageek/swift-ssl.git", branch: "main"),
-        .package(url: "https://github.com/1amageek/swift-tls-types.git", branch: "main"),
-        .package(url: "https://github.com/1amageek/swift-p2p-core.git", branch: "main"),
-    ],
-    targets: [
+var packageProducts: [Product] = [
+    // ---- Tier-1 facade (the default `import TLS`) ----
+    .library(name: "TLS", targets: ["TLS"]),
+    // ---- QUIC TLS session boundary ----
+    .library(name: "QUICTLS", targets: ["QUICTLS"]),
+]
+
+var packageTargets: [Target] = [
         // ---- Unified Pure Swift crypto provider (dual-build: host + Embedded) ----
         .target(
             name: "TLSCryptoProvider",
@@ -129,9 +117,51 @@ let package = Package(
                 "TLS",
                 "TLSCryptoProvider",
                 .product(name: "SSLDTLS", package: "swift-ssl"),
+                .product(name: "DTLSWire", package: "swift-ssl"),
                 .product(name: "DTLSRecord", package: "swift-ssl"),
             ],
             path: "Tests/TLSCanonicalTests"
         ),
-    ]
+]
+
+if Context.environment["SWIFT_TLS_ENABLE_BENCHMARKS"] == "1" {
+    packageProducts.append(
+        .executable(
+            name: "swift-tls-dtls-copy-budget-benchmark",
+            targets: ["TLSDTLSCopyBudgetBenchmark"]
+        )
+    )
+    packageTargets.append(
+        .executableTarget(
+            name: "TLSDTLSCopyBudgetBenchmark",
+            dependencies: ["TLS"],
+            path: "Benchmarks/DTLSCopyBudget/SwiftWorker",
+            swiftSettings: coreSettings
+        )
+    )
+}
+
+let package = Package(
+    // This package owns the public TLS-family session contracts above swift-ssl.
+    name: "swift-tls",
+    platforms: [
+        .macOS(.v26), .iOS(.v26), .tvOS(.v26),
+        .watchOS(.v26), .visionOS(.v26),
+    ],
+    products: packageProducts,
+    dependencies: [
+        .package(
+            url: "https://github.com/1amageek/swift-ssl.git",
+            from: "0.1.1"
+        ),
+        .package(
+            url: "https://github.com/1amageek/swift-tls-types.git",
+            from: "0.1.0"
+        ),
+        .package(
+            url: "https://github.com/1amageek/swift-p2p-core.git",
+            from: "0.3.2"
+        ),
+    ],
+    targets: packageTargets
 )

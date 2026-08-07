@@ -11,18 +11,32 @@ extension TLSCryptoProvider {
     ) throws(DTLSRecordProtectionError) -> DTLSRecordProtectionContext {
         let protector = try makeSSLDTLSProtector(key: key, fixedIV: fixedIV)
         return DTLSRecordProtectionContext(
+            recordOverhead: 24,
             seal: { @Sendable (
-                plaintext: [UInt8],
+                plaintext: Span<UInt8>,
                 explicitNonce: [UInt8],
-                aad: [UInt8]
-            ) throws(DTLSRecordProtectionError) -> [UInt8] in
-                try seal(protector, plaintext: plaintext, explicitNonce: explicitNonce, aad: aad)
+                aad: [UInt8],
+                output: inout MutableSpan<UInt8>
+            ) throws(DTLSRecordProtectionError) in
+                try seal(
+                    protector,
+                    plaintext: plaintext,
+                    explicitNonce: explicitNonce,
+                    aad: aad,
+                    into: &output
+                )
             },
             open: { @Sendable (
-                ciphertext: [UInt8],
-                aad: [UInt8]
-            ) throws(DTLSRecordProtectionError) -> [UInt8] in
-                try open(protector, ciphertext: ciphertext, aad: aad)
+                ciphertext: Span<UInt8>,
+                aad: [UInt8],
+                output: inout MutableSpan<UInt8>
+            ) throws(DTLSRecordProtectionError) in
+                try open(
+                    protector,
+                    ciphertext: ciphertext,
+                    aad: aad,
+                    into: &output
+                )
             }
         )
     }
@@ -33,18 +47,32 @@ extension TLSCryptoProvider {
     ) throws(DTLSRecordProtectionError) -> DTLSRecordProtectionContext {
         let protector = try makeSSLDTLSProtector(key: key, fixedIV: fixedIV)
         return DTLSRecordProtectionContext(
+            recordOverhead: 24,
             seal: { @Sendable (
-                plaintext: [UInt8],
+                plaintext: Span<UInt8>,
                 explicitNonce: [UInt8],
-                aad: [UInt8]
-            ) throws(DTLSRecordProtectionError) -> [UInt8] in
-                try seal(protector, plaintext: plaintext, explicitNonce: explicitNonce, aad: aad)
+                aad: [UInt8],
+                output: inout MutableSpan<UInt8>
+            ) throws(DTLSRecordProtectionError) in
+                try seal(
+                    protector,
+                    plaintext: plaintext,
+                    explicitNonce: explicitNonce,
+                    aad: aad,
+                    into: &output
+                )
             },
             open: { @Sendable (
-                ciphertext: [UInt8],
-                aad: [UInt8]
-            ) throws(DTLSRecordProtectionError) -> [UInt8] in
-                try open(protector, ciphertext: ciphertext, aad: aad)
+                ciphertext: Span<UInt8>,
+                aad: [UInt8],
+                output: inout MutableSpan<UInt8>
+            ) throws(DTLSRecordProtectionError) in
+                try open(
+                    protector,
+                    ciphertext: ciphertext,
+                    aad: aad,
+                    into: &output
+                )
             }
         )
     }
@@ -62,28 +90,31 @@ extension TLSCryptoProvider {
         guard key.count == 16 || key.count == 32 else {
             throw .crypto(.invalidLength(expected: 16, actual: key.count))
         }
-        // The validated lengths are within SecretByteCount's limit. Any
-        // allocation failure is an invariant failure, never a fallback.
-        return try! DTLS12AESGCMRecordProtector(
-            key: key.span,
-            fixedIV: fixedIV.span,
-            epoch: 0
-        )
+        do {
+            return try DTLS12AESGCMRecordProtector(
+                key: key.span,
+                fixedIV: fixedIV.span,
+                epoch: 0
+            )
+        } catch {
+            throw mapSealError(error)
+        }
     }
 
     private static func seal(
         _ protector: DTLS12AESGCMRecordProtector,
-        plaintext: [UInt8],
+        plaintext: Span<UInt8>,
         explicitNonce: [UInt8],
-        aad: [UInt8]
-    ) throws(DTLSRecordProtectionError) -> [UInt8] {
+        aad: [UInt8],
+        into output: inout MutableSpan<UInt8>
+    ) throws(DTLSRecordProtectionError) {
         do {
-            let bytes = try protector.sealRaw(
-                plaintext: plaintext.span,
+            try protector.sealRaw(
+                plaintext: plaintext,
                 explicitNonce: explicitNonce.span,
-                authenticatedData: aad.span
+                authenticatedData: aad.span,
+                into: &output
             )
-            return copy(bytes)
         } catch {
             throw mapSealError(error)
         }
@@ -91,30 +122,18 @@ extension TLSCryptoProvider {
 
     private static func open(
         _ protector: DTLS12AESGCMRecordProtector,
-        ciphertext: [UInt8],
-        aad: [UInt8]
-    ) throws(DTLSRecordProtectionError) -> [UInt8] {
+        ciphertext: Span<UInt8>,
+        aad: [UInt8],
+        into output: inout MutableSpan<UInt8>
+    ) throws(DTLSRecordProtectionError) {
         do {
-            let bytes = try protector.openRaw(
-                recordFragment: ciphertext.span,
-                authenticatedData: aad.span
+            try protector.openRaw(
+                recordFragment: ciphertext,
+                authenticatedData: aad.span,
+                into: &output
             )
-            return copy(bytes)
         } catch {
             throw mapOpenError(error)
-        }
-    }
-
-    private static func copy(_ bytes: OwnedBytes) -> [UInt8] {
-        bytes.withBorrowedBytes { source in
-            var result: [UInt8] = []
-            result.reserveCapacity(source.count)
-            var index = 0
-            while index < source.count {
-                result.append(source[index])
-                index += 1
-            }
-            return result
         }
     }
 

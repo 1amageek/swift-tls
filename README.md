@@ -2,7 +2,7 @@
 
 Pure Swift session facade for TLS 1.3 ([RFC 8446](https://www.rfc-editor.org/rfc/rfc8446)), DTLS 1.2 WebRTC ([RFC 6347](https://www.rfc-editor.org/rfc/rfc6347)), and QUIC TLS. The currency is `[UInt8]` / `Span<UInt8>`; this is an Embedded-first package.
 
-> **Release status.** The canonical package identity is published from the `main` branch. No `2.0.0` release is claimed.
+> **Release status.** Current release: `1.3.3`.
 
 ## Ecosystem responsibility
 
@@ -75,6 +75,27 @@ fingerprint binding are supplied by the caller (WebRTC owns its signaling-bound
 identity policy); this facade does not select BoringSSL, CryptoKit, or a host-only
 certificate backend.
 
+## DTLS zero-copy benchmark
+
+The canonical DTLS send path encrypts directly into its final wire-record owner.
+The receive path borrows the caller's encrypted datagram through parsing and AEAD
+authentication, then writes into the final plaintext owner. The manually enabled
+benchmark is kept outside normal test targets.
+
+| Direction | Payload | Allocations/op | Allocated bytes/op | Median |
+|---|---:|---:|---:|---:|
+| Send | 1 byte | 4 | 180 | 1,146.16 ns/op |
+| Send | 1,200 bytes | 4 | 1,379 | 1,361.98 ns/op |
+| Send | 16,384 bytes | 4 | 16,563 | 3,780.93 ns/op |
+| Receive | 1 byte | 3 | 110 | 1,124.35 ns/op |
+| Receive | 1,200 bytes | 3 | 1,309 | 1,377.93 ns/op |
+| Receive | 16,384 bytes | 3 | 16,493 | 3,627.93 ns/op |
+
+Both measured allocation-byte slopes are exactly `1.0`, proving one
+payload-sized output owner in each direction and no encrypted-datagram or
+encrypted-fragment materialization. See the
+[benchmark contract and artifact](Benchmarks/DTLSCopyBudget/README.md).
+
 ## Requirements
 
 - Swift 6.4 development snapshot `2026-07-23` (tools version `6.4`)
@@ -89,7 +110,7 @@ dependencies: [
     .package(
         name: "swift-tls",
         url: "https://github.com/1amageek/swift-tls.git",
-        branch: "main"
+        from: "1.3.3"
     ),
 ]
 ```
@@ -141,7 +162,7 @@ swift run \
     WebRTCPlatformIntegrationProbe
 ```
 
-## 2.0 design notes
+## Architecture notes
 
 - Build with the pinned Swift 6.4 snapshot and matching Swift SDK.
 - `TLS` and `QUICTLS` are the public products of this package. `TLSWire`,
@@ -163,30 +184,34 @@ swift run \
 ```swift
 import TLS
 
-var config = TLSConfiguration.client(serverName: "example.com")
+let config = TLSConfiguration.client(serverName: "example.com")
 let tls = try TLSClient(configuration: config)
 
 // 1. Start the handshake → send the ClientHello.
-let hello = try await tls.startHandshake()
+let hello = try tls.startHandshake()
 try await tcp.send(hello)
 
 // 2. Feed peer bytes until the handshake completes.
 while !tls.isEstablished {
     let received: [UInt8] = try await tcp.receive()
-    let output = try await tls.receive(received.span)
+    let output = try tls.receive(received.span)
     if !output.bytesToSend.isEmpty { try await tcp.send(output.bytesToSend) }
 }
 
 // 3. Application data.
 let message = Array("Hello".utf8)
-let records = try await tls.send(message.span)
+let records = try tls.send(message.span)
 try await tcp.send(records)
 
 // 4. Graceful close.
-try await tcp.send(try await tls.close())
+try await tcp.send(try tls.close())
 ```
 
-`receive(_:)` / `send(_:)` take a `Span<UInt8>`. Obtain one from the `.span` property of a stable `[UInt8]` (or `Bytes`) binding — the facade copies the span into an internal `[UInt8]` at the boundary, so the borrow only needs to last the call.
+`receive(_:)` / `send(_:)` take a `Span<UInt8>`. Obtain one from the `.span`
+property of a stable `[UInt8]` (or `Bytes`) binding. A span is borrowed only for
+the synchronous call. DTLS send seals directly into its final record owner, and
+DTLS receive does not materialize the encrypted datagram before authentication.
+Stream TLS owns buffering according to its record-stream contract.
 
 ### DTLS 1.2 client (UDP)
 
@@ -266,16 +291,16 @@ init(configuration: TLSConfiguration) throws(TLSError)    // TLSClient / TLSServ
 init(configuration: DTLSConfiguration) throws(TLSError)   // DTLSClient / DTLSServer
 ```
 
-Common methods. **TLS** (`TLSClient` / `TLSServer`) methods are `async`; **DTLS** (`DTLSClient` / `DTLSServer`) methods are synchronous.
+All facade transitions are synchronous and sans-I/O. Transport adapters own asynchronous reads and writes outside the session mutex.
 
 | Method | TLS | DTLS |
 |--------|-----|------|
-| `startHandshake()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
-| `receive(_:)` | `async throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
-| `send(_:)` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `startHandshake()` | `throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [[UInt8]]` |
+| `receive(_:)` | `throws(TLSError) -> TLSOutput` | `throws(TLSError) -> DTLSOutput` |
+| `send(_:)` | `throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
 | `sendNewSessionTicket(...)` | `throws(TLSError) -> TLSIssuedSessionTicket` (server) | — |
-| `requestKeyUpdate(requestPeerUpdate:)` | `async throws(TLSError) -> [UInt8]` | — |
-| `close()` | `async throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
+| `requestKeyUpdate(requestPeerUpdate:)` | `throws(TLSError) -> [UInt8]` | — |
+| `close()` | `throws(TLSError) -> [UInt8]` | `throws(TLSError) -> [UInt8]` |
 | `handleTimeout()` | — | `throws(TLSError) -> [[UInt8]]` (flight retransmission) |
 
 `receive(_:)` takes a `Span<UInt8>`. `DTLSServer.receive(_:from:)` additionally takes `from remoteAddress: Span<UInt8>` for the HelloVerifyRequest cookie binding.
